@@ -119,3 +119,51 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('Contextul djangoContext lipsește din pagină!');
     }
 });
+async function runCode(){
+    const consoleOutput = document.getElementById("console-output");
+    const editor = document.getElementById("code-textarea");
+    const sourceCode = editor.value;
+    const languageSelect = document.getElementById("languages");
+    //const selectedLanguage = languageSelect.value;
+    const selectedLanguage = 113;
+    if (!sourceCode.trim()) {
+        consoleOutput.innerText = "Te rog să scrii niște cod mai întâi.";
+        return;
+    }
+    consoleOutput.innerText = "Se execută pe server... ⏳";
+    try {
+        // Apelăm endpoint-ul nostru securizat din Django!
+        const response = await fetch('/projects/api/run-code/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCookie('csrftoken')
+            },
+            body: JSON.stringify({
+                source_code: sourceCode,
+                language_id: selectedLanguage
+            })
+        });
+
+        const result = await response.json();
+
+        // Afișăm rezultatul exact ca înainte
+        if (result.stdout) {
+            consoleOutput.style.color = "#00ff00";
+            consoleOutput.innerText = result.stdout;
+        } else if (result.stderr) {
+            consoleOutput.style.color = "#ff4c4c";
+            consoleOutput.innerText = "Eroare la rulare:\n" + result.stderr;
+        } else if (result.compile_output) {
+            consoleOutput.style.color = "#ff4c4c";
+            consoleOutput.innerText = "Eroare de compilare:\n" + result.compile_output;
+        } else {
+            consoleOutput.innerText = "Programul a rulat cu succes, dar nu a afișat nimic pe ecran.";
+        }
+
+    } catch (error) {
+        consoleOutput.style.color = "#ff4c4c";
+        consoleOutput.innerText = "Eroare de conexiune cu serverul Django.";
+        console.error(error);
+    }
+}

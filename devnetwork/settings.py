@@ -13,7 +13,6 @@ AUTH_USER_MODEL = 'users.User'
 import os
 from pathlib import Path
 from decouple import config
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -22,7 +21,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = config('SECRET_KEY')
-
+RAPIDAPI_KEY = config("RAPIDAPI_KEY")
+RAPIDAPI_HOST = config("RAPIDAPI_HOST")
+RAPIDAPI_URL = config("RAPIDAPI_URL")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG',default=False,cast=bool)
@@ -129,10 +130,16 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'chat',
     'users',
-    'projects'
+    'projects',
+    'debug_toolbar'
+]
+
+DEBUG_TOOLBAR_PANELS = [
+    'debug_toolbar.panels.cache.CachePanel',
 ]
 
 MIDDLEWARE = [
+    'debug_toolbar.middleware.DebugToolbarMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -233,6 +240,16 @@ TEMPLATES = [
         }
     }
 ]
+
+CACHES = {
+    "default":{
+        "BACKEND":"django_redis.cache.RedisCache",
+        "LOCATION":"redis://127.0.0.1:6379/1",
+        "OPTIONS":{
+            "CLIENT_CLASS":'django_redis.client.DefaultClient'
+        }
+    }
+}
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/

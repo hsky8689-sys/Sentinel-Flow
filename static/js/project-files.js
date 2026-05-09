@@ -64,21 +64,8 @@ async function displayFileContent(path){
     }
 }
 function renderCode(content, path) {
-    // Presupunem că ai un div cu id="code-viewer" în HTML-ul tău
-    const container = document.getElementById("code-viewer");
-
-    // Creăm structura pentru Highlight.js
-    container.innerHTML = `
-        <h4>${path}</h4>
-        <pre><code id="current-code"></code></pre>
-    `;
-
-    const codeBlock = document.getElementById("current-code");
-    codeBlock.textContent = content; // Folosim textContent pentru securitate (XSS)
-    /*
-    if (typeof hljs !== 'undefined') {
-        hljs.highlightElement(codeBlock);
-    }*/
+    const container = document.getElementById("code-textarea");
+    container.innerHTML = content;
 }
 document.addEventListener('DOMContentLoaded', () => {
     loadDirectory();

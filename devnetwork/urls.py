@@ -29,7 +29,8 @@ urlpatterns = [
     path("projects/",include("projects.urls")),
     path("login/", users.views.login_page, name="user_login"),
     path("signup/",users.views.signup_page,name="user_signup"),
-    path("",users.views.login_page)
+    path("",users.views.login_page),
+    path('__debug__/', include('debug_toolbar.urls'))
 ]
 
 if settings.DEBUG:

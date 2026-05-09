@@ -5,7 +5,7 @@
     <div class="main-content">
         <div class="project-domains">
             {% for name in stats.domains  %}
-                <button>{{name.domain}}</button>         	
+                <button class="project-domain">{{name.domain}}</button>         	
             {% endfor %}
         </div>
         <div class="project-related-posts">
@@ -16,9 +16,24 @@
             <div id="project-structure">
                 <h1>Loading files...</h1>
             </div>
-            <div id="code-viewer">
-                
-            </div>
+            {% if stats.role != 'visitor' %}
+            <div id="code-view" style="height: 400px; width: 100%;"></div>
+                    <select id="languages">
+                        
+                    </select>
+                    <textarea rows="45" cols="100" placeholder="Comment text." id="code-textarea" style="margin-top: 10px;">
+                        
+                    </textarea>
+                    <div style="margin-top: 10px;">
+                        <button onclick="runCode()" style="padding: 10px; background: #28a745; color: white; border: none; cursor: pointer;">
+                            ▶ Run Code
+                        </button>
+                    </div>
+                    <div style="background: #1e1e1e; color: #00ff00; padding: 15px; margin-top: 10px; height: 150px; overflow-y: auto; font-family: monospace;">
+                        <strong>Console Output:</strong>
+                        <pre id="console-output" style="margin: 0;"></pre>
+                    </div>
+                    {% endif %}
         </div>
         <div class="project-task-overview">
             {% if stats.role != 'visitor' %}

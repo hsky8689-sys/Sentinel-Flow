@@ -3,6 +3,7 @@ import json
 import django.db
 import requests
 from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import render
@@ -33,8 +34,10 @@ def open_project_page(request,name):
     user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
     visitor_permissions = UserProjectRole.objects.get_role_permissions(user_role,project)
     project_domains = ProjectDomain.objects.get_project_domains(project)
-    root_link = project.root_link.split('/')
-    owner_username,repo_name = root_link[3],root_link[4]
+    owner_username,repo_name='no_github_owner_set','no_github_name_set'
+    if project.root_link:
+        root_link = project.root_link.split('/')
+        owner_username,repo_name = root_link[3],root_link[4]
     context_data = {
         'role': user_role,
         'user_id': request.user.id,
@@ -280,26 +283,110 @@ def api_get_project_roles(request,name):
     except Exception as e:
         print(str(e))
         return JsonResponse({'status':'error','code':''})
+
 @login_required
-def api_fetch_project_structure(request,owner,repo,path=""):
+def filter_tree_by_path(request,tree, current_path):
+    result = []
+    for item in tree:
+        item_path = item['path']
+
+        if current_path == "":
+            if '/' not in item_path:
+                result.append(item)
+        else:
+            if item_path.startswith(current_path + '/'):
+                sub_path = item_path[len(current_path) + 1:]
+                if '/' not in sub_path:
+                    result.append(item)
+    return result
+
+@login_required
+def handle_file_content(request,owner, repo, path):
+    cache_key = f"github_file_{owner}_{repo}_{path.replace('/', '_')}"
+    cached_file = cache.get(cache_key)
+    if cached_file:
+        return JsonResponse(cached_file, safe=False)
+
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-    headers = {
-        "Accept":"application/vnd.github.v3+json"
-    }
-    if hasattr(settings,'GITHUB_TOKEN') and settings.GITHUB_TOKEN:
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if hasattr(settings, 'GITHUB_TOKEN'):
         headers["Authorization"] = f"token {settings.GITHUB_TOKEN}"
+
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        cache.set(cache_key, r.json(), timeout=3600)
+        return JsonResponse(r.json(), safe=False)
+    return JsonResponse(r.json(), status=r.status_code, safe=False)
+
+@login_required
+def github_proxy_view(request, owner, repo, path=""):
+    if path != "" and '.' in path.split('/')[-1]:
+        return handle_file_content(request,owner, repo, path)
+
+    branch = "main"
+    cache_key = f"github_tree_recursive_{owner}_{repo}_{branch}"
+
+    cached_tree = cache.get(cache_key)
+    if cached_tree:
+        return JsonResponse(filter_tree_by_path(request,cached_tree, path), safe=False)
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if hasattr(settings, 'GITHUB_TOKEN'):
+        headers["Authorization"] = f"token {settings.GITHUB_TOKEN}"
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 404 and branch == "main":
+        url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/master?recursive=1"
+        response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return JsonResponse({'error': 'Nu am putut lua arborele'}, status=response.status_code)
+
+    raw_tree = response.json().get('tree', [])
+
+    formatted_tree = []
+    for item in raw_tree:
+        formatted_tree.append({
+            'name': item['path'].split('/')[-1],
+            'path': item['path'],
+            'type': 'dir' if item['type'] == 'tree' else 'file'
+        })
+
+    cache.set(cache_key, formatted_tree, timeout=3600)
+
+    return JsonResponse(filter_tree_by_path(request,formatted_tree, path), safe=False)
+@login_required
+@csrf_exempt
+def proxy_run_code(request):
+    if request.method != "POST":
+        return JsonResponse({'error':'non post requests not allowed'},status=405)
     try:
-      response = requests.get(url,headers=headers)
-      if response.status_code != 200:
-        return JsonResponse({
-            'error':'Error from github',
-            'details':response.json()
-        },status = response.status_code)
-      else:
-        data = response.json()
-        if isinstance(data,dict) and 'content' in data:
-            if isinstance(data['content'],bytes):
-                data['content'] = data['content'].decode('utf-8',errors='ignore')
-        return JsonResponse(data,safe=False)
+        body = json.loads(request.body)
+        source_code = body.get("source_code")
+        language_id = body.get("language_id",71)
+
+        if not source_code:
+            return JsonResponse({'error':'Code fragment is empty'},status=400)
+        url = settings.RAPIDAPI_URL
+        headers = {
+            'Content-Type':'application/json',
+            'X-RapidAPI-Key':settings.RAPIDAPI_KEY,
+            'X-RapidAPI-Host':settings.RAPIDAPI_HOST
+        }
+        payload = {
+            'source_code':source_code,
+            'language_id':language_id,
+            'stdin':""
+        }
+        response = requests.post(url,json=payload,headers=headers)
+        return JsonResponse(response.json(),status=response.status_code,safe=False)
     except Exception as e:
-        return JsonResponse({'error':'Internal Server error','details':str(e)},status=500)
+        return JsonResponse({'error':'Internal server error','message':str(e)},status=500)
+@login_required
+def request_file_open(request):
+    pass
+@login_required
+def push_files(request,message="",branch="main"):
+    pass
