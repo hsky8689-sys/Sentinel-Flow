@@ -1,3 +1,4 @@
+import base64
 import json
 
 import django.db
@@ -388,5 +389,56 @@ def proxy_run_code(request):
 def request_file_open(request):
     pass
 @login_required
-def push_files(request,message="",branch="main"):
-    pass
+@require_http_methods(["POST"])
+def push_files(request):
+    try:
+        data = json.loads(request.body)
+        files = data.get('files',{})
+        repo = data.get('repo')
+        owner = data.get('owner')
+        branch = data.get('branch')
+        default_msg = data.get('message','')
+        if default_msg is None or default_msg == '':
+            return JsonResponse({'error':'cannot push with no message'},status=400)
+        message = f'[Pushed via GitSync]:{default_msg}'
+
+        headers = {
+            "Authorization": f"token {settings.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+
+        errors = []
+        for path, content in files.items():
+            url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={branch}"
+            sha = None
+
+            meta_res = requests.get(f"{url}", headers=headers)
+            if meta_res.status_code == 200:
+                sha = meta_res.json().get('sha')
+
+            encoded_content = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+
+            put_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+            payload = {
+                "message": message,
+                "content": encoded_content,
+                "branch": branch
+            }
+            if sha:
+                payload["sha"] = sha
+
+            put_res = requests.put(put_url, json=payload, headers=headers)
+
+            if put_res.status_code in [200, 201]:
+                cache_key = f"file_content_{owner}_{repo}_{branch}_{path}"
+                cache.set(cache_key, content, timeout=3600)
+            if errors:
+                errors.append({'path':path,'error': put_res.json()})
+
+            cache.delete(f"repo_tree_{owner}_{repo}")
+            if errors:
+                return JsonResponse({'status': 'partial_error', 'errors': errors}, status=400)
+            return JsonResponse({'status': 'success'})
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'error':str(e)},status=500)

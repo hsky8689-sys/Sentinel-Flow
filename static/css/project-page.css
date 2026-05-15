@@ -143,3 +143,66 @@ body{
 .resizer:hover,.resizer:active{
     background:rgba(0,0,0,0.2);
 }
+.comit-popup{
+    background:#ffffff;
+    border:2px solid #e0e0e0;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    padding: 20px;
+    width: 320px;
+    font-family: "Ubuntu Mono",monospace;
+    animation: slideInPopUp 0.3s cubic-bezier(0.175,0.885,0.32,1.275) forwards;
+    border-left:5px solid cornflowerblue;
+}
+@keyframes slideInPopUp {
+    from{
+        transform: translateY(100px) scale(0.9);
+        opacity: 0;
+    }
+    to{
+        transform: translateY(0) scale(1);
+        opacity: 1;
+    }
+}
+.commit-popup h3{
+    margin:0 0 10px 0;
+    font-size:16px;
+    color:#333;
+}
+.commit-popup input{
+    width:100%;
+    padding:8px 12px;
+    margin-bottom: 12px;
+    border:1px solid #ccc;
+    border-radius: 6px;
+    box-sizing: border-box;
+    font-family: inherit;
+}
+.commit-popup-buttons{
+    display: flex;
+    justify-content: flex-end;
+    gap:8px;
+}
+.commit-popup-buttons button{
+    padding: 8px 16px;
+    border:none;
+    border-radius:6px;
+    cursor:pointer;
+    font-weight:bold;
+    font-family:inherit;
+    transition:all 0.2s;
+}
+.btn-confirm{
+    background-color: #28a745;
+    color:white;
+}
+.btn-confirm:hover{
+    background-color: #218838;
+}
+.btn-cancel{
+    background-color: #e0e0e0;
+    color: #333
+}
+.btn-cancel:hover {
+    background-color: #d4d4d4;
+}

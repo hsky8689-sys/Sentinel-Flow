@@ -28,6 +28,9 @@
                         <button onclick="runCode()" style="padding: 10px; background: #28a745; color: white; border: none; cursor: pointer;">
                             ▶ Run Code
                         </button>
+                        <button onclick="makeCommit()" style="padding: 10px; background: #28a745; color: white; border: none; cursor: pointer;">
+                            ▶ Commit changes
+                        </button>
                     </div>
                     <div style="background: #1e1e1e; color: #00ff00; padding: 15px; margin-top: 10px; height: 150px; overflow-y: auto; font-family: monospace;">
                         <strong>Console Output:</strong>
@@ -41,4 +44,5 @@
             {% endif %}
         </div>
     </div>
+    <div id="toast-container" style="position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px;"></div>
 {% endblock %}

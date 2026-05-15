@@ -132,7 +132,6 @@ async function runCode(){
     }
     consoleOutput.innerText = "Se execută pe server... ⏳";
     try {
-        // Apelăm endpoint-ul nostru securizat din Django!
         const response = await fetch('/projects/api/run-code/', {
             method: 'POST',
             headers: {
@@ -147,7 +146,6 @@ async function runCode(){
 
         const result = await response.json();
 
-        // Afișăm rezultatul exact ca înainte
         if (result.stdout) {
             consoleOutput.style.color = "#00ff00";
             consoleOutput.innerText = result.stdout;
