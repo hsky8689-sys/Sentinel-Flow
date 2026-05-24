@@ -11,7 +11,8 @@ function getCookie(name){
                 }
             }
             return cookieValue;
-        }
+}
+
 async function goToProjectCreation(){
            try{
         const response = await fetch('/users/create-new-project/', {

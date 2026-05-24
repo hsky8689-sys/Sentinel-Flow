@@ -1,27 +1,66 @@
 {% extends 'html/profile_page_template.html' %}
 {% load static %}
-{% block extracss %}
-    <link rel="stylesheet" href="{% static 'css/connections-page.css' %}">
+{% block extrajs %}
+    <script src="{% static 'js/handle-all-types-of-user-requests.js' %}"></script>
 {% endblock %}
 {% block content %}
 <div class="inbox-container">
-    <h2 class="inbox-title">Received requests</h2>
-    
-    <div class="requests-list" id="inbox-requests-container">
-        {% for req in context.requests %}
-            <div class="request-card" id="request-{{ req.id }}">
-                <div class="request-info">
-                    <span class="request-text">Request from <strong>{{ req.sender }}</strong></span>
-                    <span class="request-type">Vrea să se alăture proiectului</span>
+    <h2>Conexiuni și Cereri</h2>
+
+    <div class="request-section">
+        <h3>Prietenie</h3>
+        <div class="requests-list">
+            {% for req in context.requests %}
+                {% if req.request_type == 'friend' and req.status == 'pending' %}
+                <div class="request-card" id="req-friend-{{ req.sender_id }}-{{ req.receiver_id }}">
+                    <span>Cerere de la <strong>{{ req.sender.username }}</strong></span>
+                    <div class="actions">
+                        <button class="btn-accept" onclick="handleFriendRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'accept')">Accept</button>
+                        <button class="btn-reject" onclick="handleFriendRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'reject')">Reject</button>
+                    </div>
                 </div>
-                <div class="request-actions">
-                    <button class="btn-accept" onclick="handleRequest({{ req.id }}, 'accept', 'project_join')">Accept</button>
-                    <button class="btn-reject" onclick="handleRequest({{ req.id }}, 'reject', 'project_join')">Reject</button>
-                </div>
-            </div>
-        {% empty %}
-            <p class="no-requests" id="no-requests-message">Nu ai nicio cerere în așteptare.</p>
-        {% endfor %}
+                {% endif %}
+            {% endfor %}
+        </div>
     </div>
+
+    <hr>
+
+    <div class="request-section">
+        <h3>Proiecte</h3>
+        <div class="requests-list">
+            {% for req in context.requests %}
+                {% if req.request_type == 'project' and req.status == 'pending' %}
+                <div class="request-card" id="req-project-{{ req.sender_id }}-{{ req.receiver_id }}">
+                    <span><strong>{{ req.sender.username }}</strong> vrea să intre în proiect</span>
+                    <div class="actions">
+                        <button class="btn-accept" onclick="handleProjectJoinRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'accept', {{ req.target|safe }})">Accept</button>
+<button class="btn-reject" onclick="handleProjectJoinRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'reject', {{ req.target|safe }})">Reject</button>
+                    </div>
+                </div>
+                {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+
+    <hr>
+
+    <div class="request-section">
+        <h3>Acces Fișiere</h3>
+        <div class="requests-list">
+            {% for req in context.requests %}
+                {% if req.request_type == 'file' and req.status == 'pending' %}
+                <div class="request-card" id="req-file-{{ req.sender_id }}-{{ req.receiver_id }}">
+                    <span><strong>{{ req.sender.username }}</strong> cere acces la un fișier</span>
+                    <div class="actions">
+                        <button class="btn-accept" onclick="handleFileAccessRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'accept')">Accept</button>
+                        <button class="btn-reject" onclick="handleFileAccessRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'reject')">Reject</button>
+                    </div>
+                </div>
+                {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+
 </div>
 {% endblock %}

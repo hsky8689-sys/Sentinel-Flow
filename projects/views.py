@@ -633,61 +633,102 @@ def api_share_file_access(request, name):
 def api_request_project_join(request, project_id):
     try:
         project = get_object_or_404(Project, id=project_id)
-        if UserProjectRole.objects.filter(user=request.user, project=project).exists():
+
+        # 1. Verificăm dacă e deja membru
+        if UserProjectRole.objects.get_user_role_in_project(project, request.user) != 'visitor':
             return JsonResponse({'status': 'error', 'message': 'Already member of this project.'}, status=400)
+
+        # 2. Verificăm dacă există deja o cerere în așteptare pentru acest proiect
         pending_exists = UserRequest.objects.filter(
             sender=request.user,
             request_type='project',
+            target=str(project.id),  # Căutăm după noul câmp target
             status='pending'
         ).exists()
+
         if pending_exists:
             return JsonResponse({'status': 'error', 'message': 'Already requested to join this project.'}, status=400)
+
+        # 3. Găsim adminii proiectului
         project_admins = User.objects.filter(
             user__project=project,
             user__role__can_change_project_settings=True
         ).distinct()
+
         if not project_admins.exists():
             return JsonResponse({'status': 'error', 'message': 'Project has no registered admins'}, status=500)
-        UserRequest.objects.send_project_join_request(request.user,list(project_admins))
-        return JsonResponse({'status': 'success', 'message': 'Request succesfully sent!'},status=200)
+
+        # 4. Creăm/Actualizăm cererea pentru admini
+        for admin in project_admins:
+            UserRequest.objects.update_or_create(
+                sender=request.user,
+                receiver=admin,
+                defaults={
+                    'request_type': 'project',
+                    'target': str(project.id),  # Salvăm ID-ul proiectului ca string!
+                    'status': 'pending'
+                }
+            )
+
+        return JsonResponse({'status': 'success', 'message': 'Request successfully sent!'}, status=200)
 
     except Project.DoesNotExist:
         return JsonResponse({'status': 'error', 'message': 'Project does not exist.'}, status=404)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
 @login_required
 @require_POST
-def api_handle_project_join_request(request, request_id):
+def api_handle_project_join_request(request):
     try:
-        # Extragem decizia din body (ex: {"action": "accept"})
         data = json.loads(request.body)
         action = data.get('action')
+        sender_id = data.get('sender_id')
+        receiver_id = data.get('receiver_id')
 
-        user_req = get_object_or_404(UserRequest, id=request_id, request_type='project', status='pending')
+        if not all([action, sender_id, receiver_id]):
+            return JsonResponse({'status': 'error', 'message': 'Missing parameters in request.'}, status=400)
 
-        if isinstance(user_req,QuerySet):
-            checked = list(user_req)[0]
-            project_admin = checked.receiver
-        # Opțional: Aici ar trebui să te asiguri că request.user are dreptul să accepte (e admin pe proiectul vizat)
-        # Presupunem că target_object_id e ID-ul proiectului pentru cererile de tip 'project'
-        project = get_object_or_404(Project, id=user_req.target_object_id)
+        user_req = get_object_or_404(
+            UserRequest,
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            request_type='project',
+            status='pending'
+        )
 
+        project = get_object_or_404(Project, id=int(user_req.target))
+
+        # 4. Verificăm dacă userul care a cerut accesul nu cumva a intrat deja în proiect între timp
+        if UserProjectRole.objects.get_user_role_in_project(project, user_req.sender) != 'visitor':
+            user_req.status = 'accepted'
+            user_req.save()
+            return JsonResponse({'status': 'error', 'message': 'User is already a member of this project.'}, status=400)
+
+        # 5. Executăm logica în funcție de decizia luată în UI
         if action == 'accept':
+            # Îi creăm rolul de membru în proiect
             UserProjectRole.objects.create(
                 user=user_req.sender,
                 project=project,
-                # role=default_role
+                role=ProjectRole.objects.get(name='newbie') # Rolul tău default
             )
             user_req.status = 'accepted'
             user_req.save()
-            return JsonResponse({'status': 'success', 'message': 'User accepted into project.'}, status=200)
-        elif action == 'reject':
-            user_req.status = 'rejected'
+            return JsonResponse({'status': 'success', 'message': 'User successfully added to the project!'}, status=200)
+
+        elif action in ['reject', 'deny', 'declined']:
+            # Folosim 'declined' pentru că așa ai definit în model choices/constraints
+            user_req.status = 'declined'
             user_req.save()
-            return JsonResponse({'status': 'success', 'message': 'Request denied.'}, status=200)
+            return JsonResponse({'status': 'success', 'message': 'Project join request declined.'}, status=200)
+
         else:
-            return JsonResponse({'status': 'error', 'message': 'Invalid action provided.'}, status=400)
+            return JsonResponse({'status': 'error', 'message': 'Unknown action.'}, status=400)
+
     except json.JSONDecodeError:
-        return JsonResponse({'status': 'error', 'message': 'Invalid JSON body.'}, status=400)
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON format.'}, status=400)
+    except ProjectRole.DoesNotExist:
+        return JsonResponse({'status': 'error', 'message': 'Default role "newbie" was not found in DB.'}, status=500)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)

@@ -1,18 +1,5 @@
-  function getCookie(name){
-            let cookieValue = null;
-            if (document.cookie && document.cookie !== '') {
-                const cookies = document.cookie.split(';');
-                for (let i = 0; i < cookies.length; i++) {
-                    const cookie = cookies[i].trim();
-                    if (cookie.substring(0, name.length + 1) === (name + '=')) {
-                        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                        break;
-                    }
-                }
-            }
-            return cookieValue;
-        }
-        async function searchQuery(){
+import { getCookie } from './fetching-utils';
+async function searchQuery(){
              const query = document.getElementById("searchbar").value.trim();
              if(!query){
                 alert('search for something!!');
@@ -36,7 +23,7 @@
                 alert('Error: '+error)
              }
         }
-        async function displayResults(results){
+async function displayResults(results){
             const feed = document.getElementById('search-results');
             if(!feed){
                 alert('Could not get feed element');

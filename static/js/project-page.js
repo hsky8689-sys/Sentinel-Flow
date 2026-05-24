@@ -193,13 +193,19 @@ async function runCode(){
         console.error(error);
     }
 }
+async function leaveProject(projectId){
+    return null;
+}
 async function requestJoin(projectId) {
     const joinBtn = document.getElementById('join-btn');
+    if (!joinBtn) return;
+
     joinBtn.disabled = true;
-    joinBtn.textContent = 'Trimitere...';
-    const desiredUrl = `/projects/api/${projectId}/request-join`;
+    const originalText = joinBtn.textContent;
+    joinBtn.textContent = 'Se trimite...';
 
     try {
+        // ATENȚIE: URL-ul trebuie să se potrivească 1:1 cu urls.py (am pus slash la final preventiv, modifică dacă e fără)
         const response = await fetch(`/projects/api/${projectId}/request-join`, {
             method: 'POST',
             headers: {
@@ -211,19 +217,19 @@ async function requestJoin(projectId) {
         const data = await response.json();
 
         if (data.status === 'success') {
+            // Transformăm butonul în pending vizual
             joinBtn.textContent = 'Join Request Pending...';
-            joinBtn.classList.replace('btn-primary', 'btn-secondary');
+            joinBtn.classList.remove('btn-primary');
+            joinBtn.classList.add('btn-secondary');
         } else {
-            alert(data.message);
+            alert(data.message || 'A apărut o eroare pe server.');
             joinBtn.disabled = false;
-            joinBtn.textContent = 'Request Join';
+            joinBtn.textContent = originalText;
         }
     } catch (error) {
-        console.error('Eroare:', error);
+        console.error('Eroare JS la trimiterea cererii:', error);
+        alert('Eroare de rețea. Verifică consola.');
         joinBtn.disabled = false;
-        joinBtn.textContent = 'Request Join';
+        joinBtn.textContent = originalText;
     }
-}
-async function leaveProject(projectId){
-    return null;
 }

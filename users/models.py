@@ -315,6 +315,7 @@ class UserRequest(models.Model):
         max_length=20,
         choices=[('friend', 'friend'), ('project', 'project')]
     )
+    target = models.CharField(max_length=255, null=True, blank=True, db_index=True,default=None)
     status = models.CharField(
         max_length=20,
         choices=[('pending', 'pending'), ('declined', 'declined'), ('accepted', 'accepted')]

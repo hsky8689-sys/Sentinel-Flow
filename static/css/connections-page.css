@@ -54,7 +54,7 @@
 .request-actions {
         display: flex;
         gap: 10px;
-    }
+}
 
 .request-actions button {
         padding: 8px 16px;
@@ -90,4 +90,9 @@
         background: rgba(255, 255, 255, 0.5);
         padding: 20px;
         border-radius: 8px;
-    }
+}
+
+.request-section { margin-bottom: 30px; }
+    .request-section h3 { color: #555; margin-bottom: 10px; border-bottom: 2px solid #eee; padding-bottom: 5px; }
+    .request-card { display: flex; justify-content: space-between; align-items: center; padding: 10px; border: 1px solid #ddd; margin-bottom: 10px; border-radius: 5px; }
+    .actions { display: flex; gap: 10px; }
