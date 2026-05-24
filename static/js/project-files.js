@@ -122,7 +122,8 @@ async function pushModified(){
                             'files':dirtyFiles,
                             'repo':window.djangoContext.project.repo_name,
                             'owner':window.djangoContext.project.owner_username,
-                            'branch':'master',//schimba-l tati....
+                            'branch':'master',
+                            'project':window.djangoContext.project.id,
                             'message':window.localStorage.getItem("commitMessage")
                             })
               });
@@ -199,3 +200,45 @@ function popUpCommit(){
         }
     });
 }
+class FileAccessObserver{
+    constructor() {
+        this.listeners=[];
+        this.currentInterval=null;
+    }
+    subscribe(callback){
+        this.listeners.push(callback);
+    }
+    notify(statusData){
+        this.listeners.forEach(callback=>callback(statusData));
+    }
+    startWatching(filePath,projectId){
+        this.stopWatching();
+        this.currentInterval= setInterval(async ()=>{
+            try{
+                const response = await fetch(`/api/check-file-status/${projectId}/?path=${filePath}`);
+                if (response.status === 403 || response.status === 423) {
+                    this.notify({ hasAccess: false, reason: response.status === 403 ? 'revoked' : 'locked' });
+                    this.stopWatching();
+                }
+            }catch (error){
+                console.error(`Error ${error} at observer`);
+            }
+        },5000);
+    }
+    stopWatching(){
+        if(this.currentInterval){
+            clearInterval(this.currentInterval);
+        }
+    }
+}
+const fileObserver = new FileAccessObserver();
+
+fileObserver.subscribe((status) => {
+    if (!status.hasAccess) {
+        document.getElementById('code-editor-area').style.display = 'none';
+        document.getElementById('no-access-banner').style.display = 'block';
+
+        const motiv = status.reason === 'locked' ? 'Fișierul a fost blocat de alt utilizator.' : 'Ți-a fost revocat accesul.';
+        alert(`Atenție: ${motiv}`);
+    }
+});

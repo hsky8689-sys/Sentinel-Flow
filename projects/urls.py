@@ -4,7 +4,8 @@ from projects.views import open_project_page, open_project_members_page, open_pr
     api_get_project_requirements, api_add_project_domains, api_delete_project_domains, api_add_project_requirements, \
     api_remove_project_requirements, api_add_project_sections, api_remove_project_sections, api_get_project_tasks, \
     api_add_project_task, api_remove_project_tasks, api_get_project_roles, \
-    github_proxy_view, proxy_run_code, push_files, api_add_project_role, api_assign_users_to_role
+    github_proxy_view, proxy_run_code, push_files, api_add_project_role, api_assign_users_to_role, \
+    api_get_availible_languages, api_request_project_join
 
 app_name = 'projects'
 
@@ -30,9 +31,10 @@ urlpatterns = [
     path('api/github/<str:owner>/<str:repo>/<path:path>',github_proxy_view,name='github-fetch-path'),
     path('api/run-code/',proxy_run_code,name='run-code'),
     path('api/github/push-files/',push_files,name='push-code'),
-
-    path('/settings/<int:id>/api-add-role', api_add_project_role,name="add-role"),
-    path('/settings/<int:id>/defacutpemaine...',api_assign_users_to_role,name="add-users-to-role")
+    path('settings/<int:id>/api-add-role', api_add_project_role,name="add-role"),
+    path('/settings/<int:id>/defacutpemaine...',api_assign_users_to_role,name="add-users-to-role"),
+    path('get-available-languages',api_get_availible_languages,name="view-selected-languages"),
+    path('api/<int:project_id>/request-join',api_request_project_join,name='send-project-join-request')
 ]
 
 

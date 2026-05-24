@@ -12,10 +12,11 @@ function getCookie(name){
             }
             return cookieValue;
 }
-function loadPage(context){
+async function loadPage(context){
     const role = context.role;
     window.localStorage.setItem("newDomains","[]");
     window.localStorage.setItem("removedDomains","[]");
+    await loadLanguages(false);
     const domains_div = document.getElementsByClassName("project-domains");
     if(role === 'visitor'){
         console.log('fetching requirements');
@@ -112,20 +113,47 @@ async function getProjectRequirements(){
         console.error(`Fail to copy:`,err);
     }
 }
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     if (window.djangoContext && window.djangoContext.user) {
-        loadPage(window.djangoContext.user);
+        await loadPage(window.djangoContext.user);
     } else {
         console.error('Contextul djangoContext lipsește din pagină!');
     }
 });
+async function loadLanguages(forceInvalidate=false){
+    const selectElement = document.getElementById('languages');
+    const projectName = window.djangoContext.project.name;
+    selectElement.innerHTML = '<option value="">Loading languages...</option>';
+    const url = forceInvalidate ? `/projects/get-available-languages?invalidate=true`
+        : `/projects/get-available-languages`;
+    try{
+        const response = await fetch(url);
+        const data = await response.json();
+        if(data.status === 'success'){
+            selectElement.innerHTML = '';
+            data.languages.forEach(lang=>{
+                const option = document.createElement('option');
+                option.value = lang.id;
+                option.textContent = lang.name;
+                if(lang.id === 71)
+                    option.selected = true;
+                selectElement.appendChild(option);
+            });
+        }
+        else{
+            selectElement.innerHTML = '<option value="">Error loading languages</option>';
+        }
+    }catch (error){
+        console.log("Se pare că lista de limbaje e coruptă sau veche. Refacem cache-ul...");
+        await loadLanguages(true);
+    }
+}
 async function runCode(){
     const consoleOutput = document.getElementById("console-output");
     const editor = document.getElementById("code-textarea");
     const sourceCode = editor.value;
     const languageSelect = document.getElementById("languages");
-    //const selectedLanguage = languageSelect.value;
-    const selectedLanguage = 113;
+    const selectedLanguage = languageSelect.value;
     if (!sourceCode.trim()) {
         consoleOutput.innerText = "Te rog să scrii niște cod mai întâi.";
         return;
@@ -164,4 +192,38 @@ async function runCode(){
         consoleOutput.innerText = "Eroare de conexiune cu serverul Django.";
         console.error(error);
     }
+}
+async function requestJoin(projectId) {
+    const joinBtn = document.getElementById('join-btn');
+    joinBtn.disabled = true;
+    joinBtn.textContent = 'Trimitere...';
+    const desiredUrl = `/projects/api/${projectId}/request-join`;
+
+    try {
+        const response = await fetch(`/projects/api/${projectId}/request-join`, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const data = await response.json();
+
+        if (data.status === 'success') {
+            joinBtn.textContent = 'Join Request Pending...';
+            joinBtn.classList.replace('btn-primary', 'btn-secondary');
+        } else {
+            alert(data.message);
+            joinBtn.disabled = false;
+            joinBtn.textContent = 'Request Join';
+        }
+    } catch (error) {
+        console.error('Eroare:', error);
+        joinBtn.disabled = false;
+        joinBtn.textContent = 'Request Join';
+    }
+}
+async function leaveProject(projectId){
+    return null;
 }

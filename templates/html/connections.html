@@ -1,9 +1,27 @@
 {% extends 'html/profile_page_template.html' %}
 {% load static %}
+{% block extracss %}
+    <link rel="stylesheet" href="{% static 'css/connections-page.css' %}">
+{% endblock %}
 {% block content %}
-    <div class="received-requests">
+<div class="inbox-container">
+    <h2 class="inbox-title">Received requests</h2>
+    
+    <div class="requests-list" id="inbox-requests-container">
         {% for req in context.requests %}
-            <p>Request from {{ req.sender }}</p>
+            <div class="request-card" id="request-{{ req.id }}">
+                <div class="request-info">
+                    <span class="request-text">Request from <strong>{{ req.sender }}</strong></span>
+                    <span class="request-type">Vrea să se alăture proiectului</span>
+                </div>
+                <div class="request-actions">
+                    <button class="btn-accept" onclick="handleRequest({{ req.id }}, 'accept', 'project_join')">Accept</button>
+                    <button class="btn-reject" onclick="handleRequest({{ req.id }}, 'reject', 'project_join')">Reject</button>
+                </div>
+            </div>
+        {% empty %}
+            <p class="no-requests" id="no-requests-message">Nu ai nicio cerere în așteptare.</p>
         {% endfor %}
     </div>
+</div>
 {% endblock %}

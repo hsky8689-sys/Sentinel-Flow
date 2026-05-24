@@ -9,6 +9,16 @@
             {% endfor %}
         </div>
         <div class="project-related-posts">
+            <div class="project-actions">
+            {% if stats.role == 'visitor' %}
+    <button class="btn btn-primary" id="join-btn" onclick="requestJoin({{ stats.project_id }})">Request Join</button>
+{% elif has_pending_request %}
+    <button class="btn btn-secondary" disabled>Join Request Pending...</button>
+{% else %}
+    <button class="btn btn-danger" onclick="leaveProject({{ stats.project_id }})">Leave Project</button>
+{% endif %}
+</div>
+            <script>alert({{user.role}})</script>
             <h1>Project description</h1>
             <br>
             <h2>{{stats.description}}</h2>

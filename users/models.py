@@ -38,16 +38,16 @@ class User(AbstractBaseUser,PermissionsMixin):
 class UserProfileData(models.Model):
     user = models.ForeignKey(User,on_delete=models.CASCADE)
     profile_picture = models.ImageField(
-        upload_to='users/profiles/%Y/%m/%d/',
+        upload_to='static/profile_pictures/%Y/%m/%d/',
         blank=True,
         null=True,
-        default='users/profile_pictures/sbcf-default-avatar.png'
+        default='static/profile_pictures/sbcf-default-avatar.png'
     )
     background_picture = models.ImageField(
-        upload_to='users/background_pictures/%Y/%m/%d/',
+        upload_to='static/background_pictures/%Y/%m/%d/',
         blank=True,
         null=True,
-        default='users/background_pictures/sbcf-default-backgrounds.png'
+        default='static/background_pictures/sbcf-default-backgrounds.png'
     )
     biography = models.CharField(max_length=200,blank=False,default="Welcome to my profile!")
     class Meta:
@@ -284,8 +284,18 @@ class RequestManager(models.Manager):
             return request.delete()
         except django.db.DatabaseError:
             return None
-    def send_project_join_request(self,sender,project):
-        pass
+    def send_project_join_request(self,sender,receivers):
+        try:
+            return [
+                self.create(sender=sender,
+                            receiver=receiver,
+                            request_type='project',
+                            status='pending')
+                for receiver in receivers
+            ]
+        except django.db.DatabaseError as e:
+            print(str(e))
+            return None
     def send_project_invitation(self,sender,receiver):
         pass
 class UserRequest(models.Model):

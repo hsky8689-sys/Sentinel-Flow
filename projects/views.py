@@ -5,18 +5,19 @@ import django.db
 import requests
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
+from django.db.models import QuerySet
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
+from django.views.decorators.http import require_http_methods, require_POST
 from django_ratelimit.decorators import ratelimit
 
 import users.views
 from devnetwork import settings
 from projects.models import Project, UserProjectRole, ProjectDomain, ProjectSkillRequirement, ProjectRequirementSection, \
-    ProjectTask, ProjectRole
-from users.models import User
+    ProjectTask, ProjectRole, ResourceAccess
+from users.models import User, UserRequest
 
 
 @login_required
@@ -77,9 +78,6 @@ def open_project_settings(request, name):
         'user_username': request.user.username,
     }
     return render(request, 'html/project_settings_page.html', {'stats': context_data})
-@login_required
-def send_project_join_request(request,project):
-    pass
 @require_http_methods(["GET"])
 @csrf_exempt
 def api_get_project_domains(request,name):
@@ -410,9 +408,45 @@ def proxy_run_code(request):
 @login_required
 def request_file_open(request):
     pass
-def verify_push_permissions(user,user_permissions,file_list):
-    #TODO BEFORE USER TRIES PUSHING FILES
-    pass
+@login_required
+@require_http_methods(["GET"])
+def api_get_availible_languages(request):
+    cache_key = "cache_key_availible_languages"
+    if request.GET.get('invalidate') == 'true':
+        cache.delete(cache_key)
+    cached_languages = cache.get(cache_key)
+    if cached_languages:
+        return JsonResponse({'status': 'success', 'languages': cached_languages, 'source': 'cache'}, status=200)
+    try:
+        url = f"https://{settings.RAPIDAPI_HOST}/languages"
+        headers = {
+            'X-RapidAPI-Key': settings.RAPIDAPI_KEY,
+            'X-RapidAPI-Host': settings.RAPIDAPI_HOST
+        }
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            languages = response.json()
+
+            cache.set(cache_key, languages, timeout=604800)
+
+            return JsonResponse({'status': 'success', 'languages': languages, 'source': 'api'}, status=200)
+    except Exception as e:
+        return JsonResponse({'status':'error','message':str(e)},status=500)
+@login_required
+@require_http_methods(["POST"])
+def verify_push_permissions(request,project,file_list):
+    user = request.user
+    role = UserProjectRole.objects.get_user_role_in_project(project,user)
+    if role == 'visitor':
+        raise ValueError('Visitor cannot push into a project')
+    if not UserProjectRole.objects.get_role_permissions(role,project)['can_modify_files']:
+        raise ValueError('Visitor cannot modify files into the given project')
+    for file_path in file_list:
+        resource_access = ResourceAccess.objects.filter(project=project, resource_path=file_path).first()
+        if not resource_access:
+            continue#File doesn;t jhave sharing policies set up
+        if not request.user in resource_access.managers.all():
+            raise ValueError(f'User cannot change file located at {file_path}')
 @login_required
 @require_http_methods(["POST"])
 def push_files(request):
@@ -420,6 +454,8 @@ def push_files(request):
     try:
         data = json.loads(request.body)
         files = data.get('files',{})
+        project = data.get('project')
+        verify_push_permissions(request,project,files)
         repo = data.get('repo')
         owner = data.get('owner')
         branch = data.get('branch')
@@ -472,9 +508,9 @@ def push_files(request):
 @login_required
 @require_http_methods(["POST"])
 @csrf_exempt
-def api_add_project_role(request, id):
+def api_add_project_role(request, project_id):
     try:
-        project = get_object_or_404(Project, id=id)
+        project = get_object_or_404(Project, id=project_id)
         user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(user_role, project)['can_change_project_settings']:
             data = json.loads(request.body)
@@ -510,7 +546,6 @@ def api_add_project_role(request, id):
         print(f"Eroare in api_add_project_role: {str(e)}")
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
 
-
 @login_required
 @require_http_methods(["POST"])
 @csrf_exempt
@@ -519,13 +554,11 @@ def api_assign_users_to_role(request, id):
         project = get_object_or_404(Project,id=id)
         user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
 
-        # Verificăm permisiunile de admin
         if UserProjectRole.objects.get_role_permissions(user_role, project)['can_change_project_settings']:
             data = json.loads(request.body)
             role_id = data.get('role_id')
-            usernames = data.get('usernames', [])  # Așteaptă o listă: ["radu", "ana"]
+            usernames = data.get('usernames', [])
 
-            # Luăm obiectul noului rol
             target_role = get_object_or_404(ProjectRole, id=role_id, project=project)
 
             assigned_users = []
@@ -534,13 +567,10 @@ def api_assign_users_to_role(request, id):
                 try:
                     target_user = User.objects.get(username=username)
 
-                    # 1. Căutăm dacă userul are DEJA un rol în acest proiect
                     existing_roles = UserProjectRole.objects.filter(project=project, user=target_user)
                     if existing_roles.exists():
-                        # 2. Dacă are, ștergem legăturile vechi
                         existing_roles.delete()
 
-                    # 3. Adăugăm noul rol
                     UserProjectRole.objects.create(project=project, user=target_user, role=target_role)
                     assigned_users.append(username)
 
@@ -554,4 +584,110 @@ def api_assign_users_to_role(request, id):
 
     except Exception as e:
         print(f"Eroare in api_assign_users_to_role: {str(e)}")
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+@login_required
+@require_http_methods(["POST"])
+@csrf_exempt
+def api_share_file_access(request, name):
+    try:
+        project = get_object_or_404(Project, name=name)
+        project_owner = project.owner
+        user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+
+        data = json.loads(request.body)
+        file_path = data.get('file_path')
+        target_usernames = data.get('usernames', [])
+        give_management_rights = data.get('make_manager', False)
+
+        can_modify_files = UserProjectRole.objects.get_role_permissions(user_role, project)['can_modify_files']
+
+        resource_access = ResourceAccess.objects.filter(project=project, resource_path=file_path).first()
+        is_file_manager = resource_access and request.user in resource_access.managers.all()
+
+        if not (can_modify_files or is_file_manager):
+            return JsonResponse({'status': 'Unauthorized', 'message': 'You do not have the right to share this file'},status=403)
+        if not resource_access:
+            resource_access = ResourceAccess.objects.create(project=project, resource_path=file_path)
+            resource_access.managers.add(request.user)
+            resource_access.managers.add(project_owner)
+            resource_access.allowed_users.add(project_owner)
+            resource_access.allowed_users.add(request.user)
+        success_shared = []
+        for username in target_usernames:
+            try:
+                user_to_add = User.objects.get(username=username)
+                resource_access.allowed_users.add(user_to_add)
+                if give_management_rights:
+                    resource_access.managers.add(user_to_add)
+                success_shared.append(username)
+            except User.DoesNotExist:
+                continue
+        return JsonResponse({'status': 'success', 'shared_with': success_shared}, status=200)
+    except Exception as e:
+        print(f"Eroare in api_share_file_access: {str(e)}")
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+@login_required
+@require_POST
+def api_request_project_join(request, project_id):
+    try:
+        project = get_object_or_404(Project, id=project_id)
+        if UserProjectRole.objects.filter(user=request.user, project=project).exists():
+            return JsonResponse({'status': 'error', 'message': 'Already member of this project.'}, status=400)
+        pending_exists = UserRequest.objects.filter(
+            sender=request.user,
+            request_type='project',
+            status='pending'
+        ).exists()
+        if pending_exists:
+            return JsonResponse({'status': 'error', 'message': 'Already requested to join this project.'}, status=400)
+        project_admins = User.objects.filter(
+            user__project=project,
+            user__role__can_change_project_settings=True
+        ).distinct()
+        if not project_admins.exists():
+            return JsonResponse({'status': 'error', 'message': 'Project has no registered admins'}, status=500)
+        UserRequest.objects.send_project_join_request(request.user,list(project_admins))
+        return JsonResponse({'status': 'success', 'message': 'Request succesfully sent!'},status=200)
+
+    except Project.DoesNotExist:
+        return JsonResponse({'status': 'error', 'message': 'Project does not exist.'}, status=404)
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+@login_required
+@require_POST
+def api_handle_project_join_request(request, request_id):
+    try:
+        # Extragem decizia din body (ex: {"action": "accept"})
+        data = json.loads(request.body)
+        action = data.get('action')
+
+        user_req = get_object_or_404(UserRequest, id=request_id, request_type='project', status='pending')
+
+        if isinstance(user_req,QuerySet):
+            checked = list(user_req)[0]
+            project_admin = checked.receiver
+        # Opțional: Aici ar trebui să te asiguri că request.user are dreptul să accepte (e admin pe proiectul vizat)
+        # Presupunem că target_object_id e ID-ul proiectului pentru cererile de tip 'project'
+        project = get_object_or_404(Project, id=user_req.target_object_id)
+
+        if action == 'accept':
+            UserProjectRole.objects.create(
+                user=user_req.sender,
+                project=project,
+                # role=default_role
+            )
+            user_req.status = 'accepted'
+            user_req.save()
+            return JsonResponse({'status': 'success', 'message': 'User accepted into project.'}, status=200)
+        elif action == 'reject':
+            user_req.status = 'rejected'
+            user_req.save()
+            return JsonResponse({'status': 'success', 'message': 'Request denied.'}, status=200)
+        else:
+            return JsonResponse({'status': 'error', 'message': 'Invalid action provided.'}, status=400)
+    except json.JSONDecodeError:
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON body.'}, status=400)
+    except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)

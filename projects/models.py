@@ -222,6 +222,9 @@ class ProjectRole(models.Model):
     can_add_tasks = models.BooleanField(default=False)
     can_delete_tasks = models.BooleanField(default=False)
     can_modify_tasks = models.BooleanField(default=False)
+    can_modify_files = models.BooleanField(default=False)
+    can_execute_code = models.BooleanField(default=False)
+    can_share_file_access = models.BooleanField(default=False)
     can_change_project_settings = models.BooleanField(default=False)
     objects = ProjectRoleManager()
 
@@ -286,6 +289,7 @@ class UserProjectRoleManager(models.Manager):
                 'can_add_tasks': role.can_add_tasks,
                 'can_delete_tasks': role.can_delete_tasks,
                 'can_modify_tasks': role.can_modify_tasks,
+                'can_modify_files':role.can_modify_files,
                 'can_change_project_settings': role.can_change_project_settings,
             }
         except Exception as e:
@@ -331,9 +335,9 @@ class UserProjectRoleManager(models.Manager):
 
 
 class UserProjectRole(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, default=-1)
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, default=-1)
-    role = models.ForeignKey(ProjectRole, on_delete=models.CASCADE, default=-1)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, default=-1,related_name='user')
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, default=-1,related_name='project')
+    role = models.ForeignKey(ProjectRole, on_delete=models.CASCADE, default=-1,related_name='role')
     objects = UserProjectRoleManager()
 
     class Meta:
@@ -483,12 +487,8 @@ class ProjectSkillRequirement(models.Model):
 class ResourceAccess(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
     resource_path = models.CharField(max_length=255)
-
     allowed_users = models.ManyToManyField(User, related_name='accessible_resources')
-
-    locked_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
-                                  related_name='locked_resources')
+    locked_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,related_name='locked_resources')
     locked_at = models.DateTimeField(null=True, blank=True)
-
     class Meta:
         unique_together = ('project', 'resource_path')

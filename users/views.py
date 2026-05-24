@@ -192,11 +192,9 @@ def api_send_friend_request(request,receiver):
 @login_required
 def api_accept_friend_request(request,sender):
     try:
-        # get() aruncă User.DoesNotExist dacă nu găsește, deci nu e nevoie de "is None"
         user = User.objects.get(id=sender)
         if user == request.user:
             return JsonResponse({'status': 'error', 'message': "Cannot accept request from self"}, status=400)
-        # Trimiți obiectul request.user, nu request.user.id
         friend_request = UserRequest.objects.find_request(user,request.user)
         if friend_request is None:
             return  JsonResponse({'status':'error','message':'No request received from certain user'},status=404)
@@ -206,13 +204,11 @@ def api_accept_friend_request(request,sender):
         UserRequest.objects.remove_request(friend_request.first())
         if sent is None:
             return JsonResponse({'status': 'error', 'message': 'Request already exists or failed'}, status=400)
-        # Aici aveai status 404 pentru "succes", l-am schimbat in 200
         return JsonResponse({'status': 'succes', 'code': 200})
     except User.DoesNotExist:
         return JsonResponse({'status': 'error', 'message': 'User not found'}, status=404)
     except Exception as e:
         print(f"Eroare API: {str(e)}")
-        # Acum view-ul returnează un JSON chiar și când crapă ceva, evitând eroarea 500 în browser
         return JsonResponse({'status': 'error', 'message': 'Internal Server Error'}, status=500)
 @login_required
 def api_remove_friend(request,removed):
