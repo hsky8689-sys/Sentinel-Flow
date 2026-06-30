@@ -1,10 +1,13 @@
+import ast
 import base64
 import json
+import re
 
 import django.db
 import requests
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
+from django.db.models import Max
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import render
@@ -28,6 +31,24 @@ def create_project(request):
         return JsonResponse({'status': 'error',
                       'code' : 404
                       })
+def get_user_file_permissions(user,project):
+    try:
+        if user is None or user.is_anonymous:
+            return {}
+        if project is None:
+            return {}
+        all_project_files = get_project_tree_paths(project,'master')
+        res = {}
+        srv = TaskResourceAccess.objects
+        for file in all_project_files:
+            if srv.user_has_access_to_path(user,project,file):
+                res[file]='ACCESS'
+            else:
+                res[file]='DENY'
+        return res
+    except Exception as e:
+        print(str(e))
+        return {}
 @login_required
 @csrf_exempt
 def open_project_page(request,name):
@@ -42,6 +63,7 @@ def open_project_page(request,name):
     if project.root_link:
         root_link = project.root_link.split('/')
         owner_username,repo_name = root_link[3],root_link[4]
+    file_permissions = get_user_file_permissions(request.user,project)
     context_data = {
         'role': user_role,
         'user_id': request.user.id,
@@ -55,7 +77,8 @@ def open_project_page(request,name):
         'roles': list(staff.keys()),
         'domains':list(project_domains),
         'description':project.description,
-        'visitor_permissions':visitor_permissions
+        'visitor_permissions':visitor_permissions,
+        'files_permissions': file_permissions
     }
     return render(request, 'html/project_page.html', {'stats': context_data})
 @login_required
@@ -70,6 +93,10 @@ def open_project_members_page(request,name):
 def open_project_settings(request, name):
     project = get_object_or_404(Project, name=name)
     user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+    permissions = UserProjectRole.objects.get_role_permissions(user_role, project)
+
+    if not permissions['can_change_project_settings']:
+        return JsonResponse({'error': 'Unauthorized access', 'code': 403})
 
     context_data = {
         'project_name': project.name,
@@ -240,6 +267,45 @@ def api_get_project_tasks(request,name):
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': str(e), 'code': 404})
+def get_project_owner_repo(project):
+    root_link_parts = project.root_link.split('/')
+    if len(root_link_parts) < 5:
+        return None, None
+    return root_link_parts[3], root_link_parts[4]
+
+
+def fetch_github_tree_with_sizes(owner, repo, branch='main'):
+    """
+    Fetches the recursive git tree from GitHub, keyed by path, including each
+    blob's size so callers can detect when a cached tree has gone stale.
+    """
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if hasattr(settings, 'GITHUB_TOKEN'):
+        headers["Authorization"] = f"token {settings.GITHUB_TOKEN}"
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 404 and branch == 'main':
+        branch = 'master'
+        url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+        response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return {}, branch
+
+    raw_tree = response.json().get('tree', [])
+    tree_by_path = {
+        item['path']: {
+            'path': item['path'],
+            'type': 'dir' if item['type'] == 'tree' else 'file',
+            'size': item.get('size', 0),
+        }
+        for item in raw_tree
+    }
+    return tree_by_path, branch
+
+
 def get_project_tree_paths(project, branch='main'):
     """
     Returns the set of every file/folder path that exists in the project's
@@ -405,11 +471,22 @@ def handle_file_content(request,owner, repo, path):
         cache.set(cache_key, r.json(), timeout=3600)
         return JsonResponse(r.json(), safe=False)
     return JsonResponse(r.json(), status=r.status_code, safe=False)
-@login_required
 def invalidate_repo_cache(repo:str,owner:str):
+    """
+    Invalidates every cached entry for a project's repo: the recursive tree
+    listings (for both 'main' and 'master') and every per-file/sub-folder
+    content cache, so a push is immediately reflected instead of serving
+    stale cached structure/content on the next request.
+    """
     try:
-        print(len([k for k in cache.keys("*") if (repo in k and owner in k)]))
-        print("-"*30)
+        for branch in ('main', 'master'):
+            cache.delete(f"github_tree_recursive_{owner}_{repo}_{branch}")
+            cache.delete(f"github_tree_with_size_{owner}_{repo}_{branch}")
+
+        stale_keys = list(cache.keys(f"github_file_{owner}_{repo}_*"))
+        stale_keys += list(cache.keys(f"file_content_{owner}_{repo}_*"))
+        if stale_keys:
+            cache.delete_many(stale_keys)
     except Exception as e:
         print(str(e))
 @login_required
@@ -459,6 +536,18 @@ def proxy_run_code(request):
         body = json.loads(request.body)
         source_code = body.get("source_code")
         language_id = body.get("language_id",71)
+        project_name = body.get("project")
+
+        if not project_name:
+            return JsonResponse({'error':'Missing project'},status=400)
+        project = Project.objects.filter(name=project_name).first()
+        if not project:
+            return JsonResponse({'error':'Project does not exist'},status=404)
+        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+        if role == 'visitor':
+            return JsonResponse({'error':'Visitor cannot execute code in this project'},status=403)
+        if not UserProjectRole.objects.get_role_permissions(role, project)['can_execute_code']:
+            return JsonResponse({'error':'You do not have the permission to execute code in this project'},status=403)
 
         if not source_code:
             return JsonResponse({'error':'Code fragment is empty'},status=400)
@@ -478,8 +567,113 @@ def proxy_run_code(request):
     except Exception as e:
         return JsonResponse({'error':'Internal server error','message':str(e)},status=500)
 @login_required
+@require_http_methods(["POST"])
+@csrf_exempt
 def request_file_open(request):
-    pass
+    try:
+        user = request.user
+        if user is None or not user.is_authenticated:
+            return JsonResponse({'error': 'User is required'}, status=401)
+
+        data = json.loads(request.body)
+        project_id = data.get('project_id')
+        if not project_id:
+            return JsonResponse({'error': 'project_id is required'}, status=400)
+
+        project = Project.objects.filter(id=project_id).first()
+        if project is None:
+            return JsonResponse({'error': 'Project does not exist'}, status=404)
+
+        files = data.get('file_urls', [])
+        if not files:
+            return JsonResponse({'error': 'No files were requested'}, status=400)
+
+        role = UserProjectRole.objects.get_user_role_in_project(project,user)
+        if role == 'visitor':
+            return JsonResponse({'error': 'User is not part of the project'}, status=403)
+        if not UserProjectRole.objects.get_role_permissions(role, project)['can_execute_code']:
+            return JsonResponse({'error': 'User is part of the project but cannot run code'}, status=403)
+
+        def find_files_from_project(project, requested_files):
+            """
+            Splits requested_files into 3 lists, reading the project's github
+            tree from cache first and only hitting the GitHub API for paths
+            that are missing. If the GitHub blob sizes differ from what's
+            cached, the cache is refreshed and the lookup is retried.
+
+            Returns (requested_access, not_in_project, already_has_access):
+              - requested_access: paths that exist in the project but `user`
+                doesn't have access to yet (an access request should be sent)
+              - not_in_project: paths that aren't part of the project's repo
+              - already_has_access: paths that exist and `user` already has
+                access to
+            """
+            owner, repo = get_project_owner_repo(project)
+            if not owner or not repo:
+                return [], list(requested_files), []
+
+            branch = 'main'
+            cache_key = f"github_tree_with_size_{owner}_{repo}_{branch}"
+            tree_by_path = cache.get(cache_key)
+
+            def split_by_presence(paths, tree):
+                present, missing = {}, []
+                for path in paths:
+                    if tree and path in tree:
+                        present[path] = tree[path]
+                    else:
+                        missing.append(path)
+                return present, missing
+
+            present, missing = split_by_presence(requested_files, tree_by_path)
+
+            if missing:
+                fresh_tree, resolved_branch = fetch_github_tree_with_sizes(owner, repo, branch)
+                stale = not tree_by_path or any(
+                    tree_by_path.get(path, {}).get('size') != item['size']
+                    for path, item in fresh_tree.items()
+                )
+                if stale:
+                    fresh_cache_key = f"github_tree_with_size_{owner}_{repo}_{resolved_branch}"
+                    cache.set(fresh_cache_key, fresh_tree, timeout=3600)
+                tree_by_path = fresh_tree
+                present, missing = split_by_presence(requested_files, tree_by_path)
+
+            requested_access, already_has_access = [], []
+            for path in present.keys():
+                resource_access = ResourceAccess.objects.filter(project=project, resource_path=path).first()
+                if resource_access and user in resource_access.allowed_users.all():
+                    already_has_access.append(path)
+                else:
+                    requested_access.append(path)
+
+            return requested_access, missing, already_has_access
+
+        requested_access, not_in_project, already_has_access = find_files_from_project(project, files)
+
+        if not requested_access and not already_has_access:
+            return JsonResponse({'error':'No requested files are part of this project'},status=404)
+
+        admins = UserProjectRole.objects.find_valid_admins(project,requested_access)
+        if admins is None or len(admins) == 0:
+            return JsonResponse({'error':'No admins can respond to this request'},status=401)
+
+        if requested_access and not UserRequest.objects.send_files_access_request(user,project,requested_access,admins):
+            return JsonResponse({'error':'Internal server error'},status=500)
+
+        response_payload = {
+            'succes': 'A request for the files from this project has been sent',
+            'requested_access': requested_access,
+            'already_has_access': already_has_access,
+            'not_in_project': not_in_project,
+        }
+        if not_in_project:
+            response_payload['message'] = 'User requested permission for some files not found in this project'
+            return JsonResponse(response_payload, status=206)
+
+        return JsonResponse(response_payload, status=200)
+    except Exception as e:
+        return JsonResponse({'error':str(e)},status=500)
 @login_required
 @require_http_methods(["GET"])
 def api_get_availible_languages(request):
@@ -498,16 +692,13 @@ def api_get_availible_languages(request):
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
             languages = response.json()
-
             cache.set(cache_key, languages, timeout=604800)
-
             return JsonResponse({'status': 'success', 'languages': languages, 'source': 'api'}, status=200)
     except Exception as e:
         return JsonResponse({'status':'error','message':str(e)},status=500)
 @login_required
 @require_http_methods(["POST"])
 def push_files(request):
-    #invalidate_repo_cache()
     try:
         data = json.loads(request.body)
         files = data.get('files',{})
@@ -516,10 +707,12 @@ def push_files(request):
         owner = data.get('owner')
         branch = data.get('branch')
         default_msg = data.get('message','')
-        if not TaskResourceAccess.objects.user_has_access_to_path(request.user,project,files):
-            return JsonResponse({'error': 'cannot push certain chosen files'}, status=401)
-        if default_msg is None or default_msg == '':
-            return JsonResponse({'error':'cannot push with no message'},status=400)
+        role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
+        if role != 'owner':
+            if not TaskResourceAccess.objects.user_has_access_to_path(request.user,project,files):
+                return JsonResponse({'error': 'cannot push certain chosen files'}, status=401)
+            if default_msg is None or default_msg == '':
+                return JsonResponse({'error':'cannot push with no message'},status=400)
         message = f'[Pushed via GitSync]:{default_msg}'
 
         headers = {
@@ -555,7 +748,7 @@ def push_files(request):
             if errors:
                 errors.append({'path':path,'error': put_res.json()})
 
-            cache.delete(f"repo_tree_{owner}_{repo}")
+            invalidate_repo_cache(repo, owner)
             if errors:
                 return JsonResponse({'status': 'partial_error', 'errors': errors}, status=400)
             return JsonResponse({'status': 'success'})
@@ -788,5 +981,81 @@ def api_handle_project_join_request(request):
         return JsonResponse({'status': 'error', 'message': 'Invalid JSON format.'}, status=400)
     except ProjectRole.DoesNotExist:
         return JsonResponse({'status': 'error', 'message': 'Default role "newbie" was not found in DB.'}, status=500)
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+@login_required
+@require_POST
+def api_handle_file_access_request(request):
+    try:
+        data = json.loads(request.body)
+        response = data.get('response')
+        sender_id = data.get('sender_id')
+        receiver_id = data.get('receiver_id')
+
+        if not all([response, sender_id, receiver_id]):
+            return JsonResponse({'status': 'error', 'message': 'Missing parameters in request.'}, status=400)
+
+        user_req = get_object_or_404(
+            UserRequest,
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            request_type='file_access',
+            status='pending'
+        )
+
+        is_accepted = str(response).lower() in ('accept', 'accepted', 'true', '1', 'yes')
+
+        if not is_accepted:
+            user_req.status = 'declined'
+            user_req.save()
+            return JsonResponse({'status': 'success', 'message': 'File access request declined.'}, status=200)
+
+        # target looks like: "Requesting acces for files ['a.py', 'b.py'] in project myproj"
+        match = re.search(r"files (\[.*\]) in project (.+)$", user_req.target or '')
+        if not match:
+            user_req.status = 'declined'
+            user_req.save()
+            return JsonResponse({'status': 'error', 'message': 'Could not parse the requested files for this request.'}, status=400)
+
+        try:
+            requested_files = ast.literal_eval(match.group(1))
+        except (ValueError, SyntaxError):
+            requested_files = []
+        project_name = match.group(2)
+
+        project = Project.objects.filter(name=project_name).first()
+        if not project:
+            user_req.status = 'declined'
+            user_req.save()
+            return JsonResponse({'status': 'error', 'message': 'Project for this request no longer exists.'}, status=400)
+
+        # TODO: let the responder pick the task; for now we attach the access
+        # to the most recent task the requesting user is already affiliated with.
+        latest_task_id = ProjectTaskParticipation.objects.filter(
+            user_id=sender_id,
+            task__project=project
+        ).aggregate(Max('task_id'))['task_id__max']
+
+        if not latest_task_id:
+            user_req.status = 'declined'
+            user_req.save()
+            return JsonResponse({'status': 'error', 'message': 'User is not affiliated with any task in this project.'}, status=400)
+
+        task = ProjectTask.objects.get(id=latest_task_id)
+        if requested_files:
+            TaskResourceAccess.objects.add_resources_to_task(task, requested_files)
+
+        user_req.status = 'accepted'
+        user_req.save()
+
+        return JsonResponse({
+            'status': 'success',
+            'message': 'File access request accepted.',
+            'task_id': latest_task_id,
+            'files': requested_files
+        }, status=200)
+    except json.JSONDecodeError:
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON format.'}, status=400)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)

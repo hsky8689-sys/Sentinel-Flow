@@ -296,8 +296,23 @@ class RequestManager(models.Manager):
         except django.db.DatabaseError as e:
             print(str(e))
             return None
+
     def send_project_invitation(self,sender,receiver):
         pass
+
+    def send_files_access_request(self,user,project,requested_access,valid_admins):
+        try:
+            return self.bulk_create(
+                [UserRequest(sender_id=user.id,
+                             request_type='file_access',
+                             status='pending',
+                             receiver_id=admin.id,
+                             target='Requesting acces for files {} in project {}'.format(requested_access,project.name),
+                             ) for admin in valid_admins]
+            )
+        except django.db.DatabaseError as e:
+            print(str(e))
+            return None
 class UserRequest(models.Model):
     pk = models.CompositePrimaryKey("sender_id","receiver_id")
     sender = models.ForeignKey(
@@ -313,7 +328,7 @@ class UserRequest(models.Model):
     timestamp = models.DateTimeField(default=datetime.now,db_index=True)
     request_type = models.CharField(
         max_length=20,
-        choices=[('friend', 'friend'), ('project', 'project')]
+        choices=[('friend', 'friend'), ('project', 'project'), ('file_access', 'file_access')]
     )
     target = models.CharField(max_length=255, null=True, blank=True, db_index=True,default=None)
     status = models.CharField(
@@ -325,7 +340,7 @@ class UserRequest(models.Model):
         db_table = 'requests'
         constraints = [
             models.CheckConstraint(
-                condition=Q(request_type__in=['friend','project']),
+                condition=Q(request_type__in=['friend','project','file_access']),
                 name='check_valid_request_type',
             ),
             models.CheckConstraint(

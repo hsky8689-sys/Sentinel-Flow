@@ -3,7 +3,6 @@ from datetime import datetime
 
 import django.db
 from django.db import models
-from django.db.models import Q
 
 from users.models import User
 
@@ -266,37 +265,23 @@ class UserProjectRoleManager(models.Manager):
                 role__name=role_name,
             ).select_related('role').first()
 
+            permission_keys = [
+                'can_accept_invites', 'can_invite_others', 'can_kick_others',
+                'can_change_roles', 'can_start_calls', 'can_add_tasks',
+                'can_delete_tasks', 'can_modify_tasks', 'can_modify_files',
+                'can_execute_code', 'can_share_file_access', 'can_change_project_settings'
+            ]
             if not user_project_role:
-                return {
-                    'can_accept_invites': False,
-                    'can_invite_others': False,
-                    'can_kick_others': False,
-                    'can_change_roles': False,
-                    'can_start_calls': False,
-                    'can_add_tasks': False,
-                    'can_delete_tasks': False,
-                    'can_modify_tasks': False,
-                    'can_change_project_settings': False,
-                }
+                return {k: False for k in permission_keys}
             role = user_project_role.role
-            return {
-                'can_accept_invites': role.can_accept_invites,
-                'can_invite_others': role.can_invite_others,
-                'can_kick_others': role.can_kick_others,
-                'can_change_roles': role.can_change_roles,
-                'can_start_calls': role.can_start_calls,
-                'can_add_tasks': role.can_add_tasks,
-                'can_delete_tasks': role.can_delete_tasks,
-                'can_modify_tasks': role.can_modify_tasks,
-                'can_modify_files':role.can_modify_files,
-                'can_change_project_settings': role.can_change_project_settings,
-            }
+            return {k: getattr(role, k) for k in permission_keys}
         except Exception as e:
             print(str(e))
             return {k: False for k in [
                 'can_accept_invites', 'can_invite_others', 'can_kick_others',
                 'can_change_roles', 'can_start_calls', 'can_add_tasks',
-                'can_delete_tasks', 'can_modify_tasks', 'can_change_project_settings'
+                'can_delete_tasks', 'can_modify_tasks', 'can_modify_files',
+                'can_execute_code', 'can_share_file_access', 'can_change_project_settings'
             ]}
 
     def give_role_to_user(self, project: int, role_assigner: int, user: int, role):
@@ -331,6 +316,31 @@ class UserProjectRoleManager(models.Manager):
         for role_obj in roles:
             users_by_role[role_obj.role.name].append(role_obj.user)
         return dict(users_by_role)
+
+    def find_valid_admins(self, project, requested_access):
+        """
+        Finds the admins that can respond to a file request access in a project
+        :param project: the project itself
+        :param requested_access: A list of the urls of the requested files for access
+        :return: a list of all the admins
+        """
+        try:
+            id_role_owner, id_role_project_manager, id_role_admin = 1, 2, 3
+            can_always_respond = [role.user for role in self.filter(
+                                        role_id__in=[id_role_owner,id_role_project_manager,id_role_admin],
+                                        project_id=project.id
+                                        ).select_related('user').distinct()]
+
+            can_also_provide_access = [participation.user for participation in
+                                        ProjectTaskParticipation.objects.filter(
+                                            task__project_id=project.id,
+                                            task__resource_accesses__resource_path__in=requested_access,
+                                       ).select_related('user').distinct()
+                                      ]
+            return can_always_respond + can_also_provide_access
+        except django.db.DatabaseError as e:
+            print(str(e))
+            return None
 
 
 class UserProjectRole(models.Model):

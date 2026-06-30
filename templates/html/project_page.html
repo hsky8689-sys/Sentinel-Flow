@@ -29,17 +29,22 @@
             {% if stats.role != 'visitor' %}
             <div id="code-view" style="height: 400px; width: 100%;"></div>
                     <select id="languages">
-                        
+
                     </select>
                     <textarea rows="45" cols="100" placeholder="Comment text." id="code-textarea" style="margin-top: 10px;">
-                        
+
                     </textarea>
                     <div style="margin-top: 10px;">
+                        {% if stats.visitor_permissions.can_execute_code %}
                         <button onclick="runCode()" style="padding: 10px; background: #28a745; color: white; border: none; cursor: pointer;">
                             ▶ Run Code
                         </button>
-                        <button onclick="makeCommit()" style="padding: 10px; background: #28a745; color: white; border: none; cursor: pointer;">
+                        {% endif %}
+                        <button id="commit-changes-btn" onclick="makeCommit()" style="padding: 10px; background: #28a745; color: white; border: none; cursor: pointer; display:none;">
                             ▶ Commit changes
+                        </button>
+                        <button id="request-access-btn" onclick="requestAccessToActiveFile()" style="padding: 10px; background: #ffc107; color: black; border: none; cursor: pointer; display:none;">
+                            🔒 Request acces
                         </button>
                     </div>
                     <div style="background: #1e1e1e; color: #00ff00; padding: 15px; margin-top: 10px; height: 150px; overflow-y: auto; font-family: monospace;">

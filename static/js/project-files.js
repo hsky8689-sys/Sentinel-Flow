@@ -65,8 +65,26 @@ function renderExplorer(items,currentPath){
             container.appendChild(div);
         });
 }
+function hasFileAccess(path){
+    const permissions = (window.djangoContext && window.djangoContext.user && window.djangoContext.user.file_permissions) || {};
+    return permissions[path] === 'ACCESS';
+}
+function updateActionButtonsVisibility(path){
+    const commitBtn = document.getElementById('commit-changes-btn');
+    const requestAccessBtn = document.getElementById('request-access-btn');
+    const accessGranted = hasFileAccess(path);
+    if(commitBtn) commitBtn.style.display = accessGranted ? 'inline-block' : 'none';
+    if(requestAccessBtn) requestAccessBtn.style.display = accessGranted ? 'none' : 'inline-block';
+}
+function requestAccessToActiveFile(){
+    if(activeFileDOMElement === null) return;
+    addToStoredList("requestedForAccess",activeFileDOMElement);
+    popUpCommit();
+}
 async function displayFileContent(path){
     activeFileDOMElement = path;
+    updateActionButtonsVisibility(path);
+
     if(repoCache[path]){
         alert('fisierul era in cache');
         console.log(`Afisam cache pentru: ${path}`)
@@ -76,6 +94,14 @@ async function displayFileContent(path){
     const desiredUrl = `/projects/api/github/${window.djangoContext.project.owner_username}/${window.djangoContext.project.repo_name}/${path}`;
     try{
         const response = await fetch(desiredUrl);
+        if(response.status === 403){
+            renderCode('');
+            const commitBtn = document.getElementById('commit-changes-btn');
+            const requestAccessBtn = document.getElementById('request-access-btn');
+            if(commitBtn) commitBtn.style.display = 'none';
+            if(requestAccessBtn) requestAccessBtn.style.display = 'inline-block';
+            return;
+        }
         const data = await response.json();
         const base64content = data.content.replace(/\s/g, '');
         const decodedContent = decodeURIComponent(escape(atob(base64content)));
@@ -90,6 +116,25 @@ function renderCode(content) {
     const container = document.getElementById("code-textarea");
     container.value = content;
 }
+function getStoredList(key){
+    return JSON.parse(window.localStorage.getItem(key) || "[]");
+}
+function setStoredList(key,list){
+    window.localStorage.setItem(key,JSON.stringify(list));
+}
+function addToStoredList(key,path){
+    const list = getStoredList(key);
+    if(!list.includes(path)){
+        list.push(path);
+        setStoredList(key,list);
+    }
+    return list;
+}
+function removeFromStoredList(key,path){
+    const list = getStoredList(key).filter(p => p !== path);
+    setStoredList(key,list);
+    return list;
+}
 function makeCommit(){
     popUpCommit();
 }
@@ -98,11 +143,9 @@ async function pushModified(){
         const textarea = document.getElementById("code-textarea");
         repoCache[textarea] = textarea.value;
     }
-    const rawDirty = window.localStorage.getItem("dirtyFiles");
-    let dirty = JSON.parse(rawDirty) || [];
+    const dirty = getStoredList("dirtyFiles");
     if(dirty.length === 0){
-        alert('La ce dai commit,boss?');
-        return;
+        return true;
     }
     var dirtyFiles = {};
     dirty.forEach(filePath=> {
@@ -122,40 +165,109 @@ async function pushModified(){
                             'files':dirtyFiles,
                             'repo':window.djangoContext.project.repo_name,
                             'owner':window.djangoContext.project.owner_username,
-                            'branch':'master',
+                            'branch':'main',
                             'project':window.djangoContext.project.id,
                             'message':window.localStorage.getItem("commitMessage")
                             })
               });
         if(response.ok){
-            window.localStorage.setItem("dirtyFiles",JSON.stringify([]));
-            Object.assign(repoCache, {});
-            window.location.reload();
+            setStoredList("dirtyFiles",[]);
+            return true;
         }
         else{
-            alert(`Ai futut api callu tata`,response.statusText);
+            alert(`Eroare la push: ${response.statusText}`);
+            return false;
         }
     }catch (error){
         alert(error);
+        return false;
+    }
+}
+async function sendAccessRequests(){
+    const requestedAccess = getStoredList("requestedForAccess");
+    if(requestedAccess.length === 0){
+        return true;
+    }
+    try{
+        const response = await fetch('/projects/api/request-file-access/', {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                project_id: window.djangoContext.project.id,
+                file_urls: requestedAccess
+            })
+        });
+        if(response.ok || response.status === 206){
+            setStoredList("requestedForAccess",[]);
+            return true;
+        }
+        const errorData = await response.json().catch(() => ({}));
+        alert(`Eroare la cererea de acces: ${errorData.error || response.statusText}`);
+        return false;
+    }catch (error){
+        alert(error);
+        return false;
+    }
+}
+async function commitChanges(){
+    const dirty = getStoredList("dirtyFiles");
+    const requestedAccess = getStoredList("requestedForAccess");
+    const pushOk = dirty.length > 0 ? await pushModified() : true;
+    const accessOk = requestedAccess.length > 0 ? await sendAccessRequests() : true;
+    if(pushOk && accessOk){
+        Object.assign(repoCache, {});
+        window.location.reload();
     }
 }
 function popUpCommit(){
     if (document.getElementById('active-commit-popup')) return;
-    const container = document.getElementById('toast-container');
-    const rawDirty = window.localStorage.getItem("dirtyFiles");
-    const dirty = JSON.parse(rawDirty) || [];
-    if(dirty.length === 0){
-        alert("You haven't modified any files...");
+    const dirty = getStoredList("dirtyFiles");
+    const requestedAccess = getStoredList("requestedForAccess");
+    if(dirty.length === 0 && requestedAccess.length === 0){
+        alert("Nu ai modificat niciun fișier și nu ai cerut acces la niciunul...");
         return;
     }
+    renderCommitPopup();
+}
+function buildCommitFileListHtml(listKey, paths, emptyLabel){
+    if(paths.length === 0){
+        return `<li><em>${emptyLabel}</em></li>`;
+    }
+    return paths.map(path => `
+        <li style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <span>${path}</span>
+            <button class="btn-remove-file" data-list="${listKey}" data-path="${path}"
+                    style="background:#dc3545; color:white; border:none; cursor:pointer; padding:2px 8px;">X</button>
+        </li>
+    `).join('');
+}
+function renderCommitPopup(){
+    const existing = document.getElementById('active-commit-popup');
+    if(existing) existing.remove();
+
+    const dirty = getStoredList("dirtyFiles");
+    const requestedAccess = getStoredList("requestedForAccess");
+    if(dirty.length === 0 && requestedAccess.length === 0){
+        return;
+    }
+
+    const container = document.getElementById('toast-container');
     const popup = document.createElement('div');
     popup.className = 'commit-popup';
     popup.id = 'active-commit-popup';
     popup.innerHTML = `
         <h3>🚀 Commit Changes</h3>
-        <p style="margin: 0 0 10px 0; font-size: 12px; color: #666;">
-            Modifici <strong>${dirty.length}</strong> fișiere.
-        </p>
+        <p style="margin: 10px 0 5px 0; font-size: 12px; color: #666;">Fișiere modificate (${dirty.length}):</p>
+        <ul class="commit-popup-files" style="list-style:none; padding:0; margin:0;">
+            ${buildCommitFileListHtml('dirty', dirty, 'Niciun fișier modificat.')}
+        </ul>
+        <p style="margin: 10px 0 5px 0; font-size: 12px; color: #666;">Cereri de acces (${requestedAccess.length}):</p>
+        <ul class="commit-popup-files" style="list-style:none; padding:0; margin:0;">
+            ${buildCommitFileListHtml('access', requestedAccess, 'Niciun acces cerut.')}
+        </ul>
         <input type="text" id="commit-msg-input" placeholder="Scrie mesajul de commit..." autofocus />
         <div class="commit-popup-buttons">
             <button class="btn-cancel" id="commit-cancel">Cancel</button>
@@ -164,34 +276,35 @@ function popUpCommit(){
     `;
     container.appendChild(popup);
 
-    // 4. Setăm focus direct pe input ca userul să poată scrie instant
+    popup.querySelectorAll('.btn-remove-file').forEach(btn => {
+        btn.onclick = () => {
+            const path = btn.dataset.path;
+            const listKey = btn.dataset.list === 'dirty' ? 'dirtyFiles' : 'requestedForAccess';
+            removeFromStoredList(listKey, path);
+            renderCommitPopup();
+        };
+    });
+
     const input = document.getElementById('commit-msg-input');
     input.focus();
 
-    // 5. Logică pentru butonul CANCEL
     document.getElementById('commit-cancel').onclick = () => {
-        popup.remove(); // Îl ștergem pur și simplu
+        popup.remove();
     };
 
-    // 6. Logică pentru butonul CONFIRM
-    document.getElementById('commit-confirm').onclick = () => {
+    document.getElementById('commit-confirm').onclick = async () => {
         const message = input.value.trim();
+        const currentDirty = getStoredList("dirtyFiles");
 
-        if (message === "") {
+        if (currentDirty.length > 0 && message === "") {
             input.style.borderColor = "red";
             input.placeholder = "TREBUIE să pui un mesaj!";
             return;
         }
 
-        // Salvăm mesajul în localStorage
         window.localStorage.setItem("commitMessage", message);
-        console.log(`Commit message setat: "${message}"`);
-
-        // Ștergem pop-up-ul din colț
         popup.remove();
-
-        // Apelăm funcția de trimitere propriu-zisă (pushModified) pe care o ai deja definită
-        pushModified();
+        await commitChanges();
     };
 
     input.addEventListener('keypress', (e) => {
