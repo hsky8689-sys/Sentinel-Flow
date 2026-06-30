@@ -205,8 +205,7 @@ class ProjectRoleManager(models.Manager):
             print(str(ex))
     def get_project_roles(self,project):
         try:
-            res = self.filter(userprojectrole__project=project).distinct()
-            return res
+            return self.filter(role__project=project).distinct()
         except django.db.Error as e:
             print(str(e))
             return []
@@ -262,10 +261,10 @@ class UserProjectRoleManager(models.Manager):
 
     def get_role_permissions(self, role_name, project):
         try:
-            user_project_role = self.get_queryset().select_related('role').filter(
+            user_project_role = self.get_queryset().filter(
+                project=project,
                 role__name=role_name,
-                project=project
-            ).first()
+            ).select_related('role').first()
 
             if not user_project_role:
                 return {
@@ -488,7 +487,55 @@ class ResourceAccess(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
     resource_path = models.CharField(max_length=255)
     allowed_users = models.ManyToManyField(User, related_name='accessible_resources')
+    managers = models.ManyToManyField(User, related_name='managed_resources', blank=True)
     locked_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,related_name='locked_resources')
     locked_at = models.DateTimeField(null=True, blank=True)
     class Meta:
         unique_together = ('project', 'resource_path')
+
+
+class TaskResourceAccessManager(models.Manager):
+    def add_resources_to_task(self, task, resource_paths):
+        """
+        Affiliates the given file/folder paths with a task, granting access
+        to every user participating in that task.
+        """
+        entries = [self.model(task=task, resource_path=path) for path in resource_paths]
+        try:
+            return self.bulk_create(entries, ignore_conflicts=True)
+        except django.db.DatabaseError as e:
+            print(str(e))
+            return []
+
+    def remove_resources_from_task(self, task, resource_paths):
+        try:
+            return self.filter(task=task, resource_path__in=resource_paths).delete()
+        except django.db.DatabaseError as e:
+            print(str(e))
+
+    def user_has_access_to_path(self, user, project, file_path):
+        """
+        ReBAC check: a user can touch a path if they participate in a task
+        that the path (or one of its parent folders) was affiliated with.
+        """
+        task_ids = ProjectTaskParticipation.objects.filter(
+            user=user, task__project=project
+        ).values_list('task_id', flat=True)
+        if not task_ids:
+            return False
+        resources = self.filter(task_id__in=task_ids)
+        for resource in resources:
+            resource_path = resource.resource_path.rstrip('/')
+            if file_path == resource_path or file_path.startswith(resource_path + '/'):
+                return True
+        return False
+
+
+class TaskResourceAccess(models.Model):
+    task = models.ForeignKey(ProjectTask, on_delete=models.CASCADE, related_name='resource_accesses')
+    resource_path = models.CharField(max_length=255)
+    objects = TaskResourceAccessManager()
+
+    class Meta:
+        db_table = 'task_resource_accesses'
+        unique_together = ('task', 'resource_path')

@@ -115,6 +115,11 @@ async function loadTaskAdministrationSection(){
             else{
                 newHtml += `<p>No tasks added to this project...</p><br>`;
             }
+            const [memberOptionsHtml, resourceOptionsHtml] = await Promise.all([
+                buildProjectMembersOptions(),
+                buildProjectResourceOptions()
+            ]);
+
             newHtml += `<form id="new-task" method="POST" onsubmit="addTask()">
                                 <label for="title">Task title</label><br>
                                 <input type="text" id="title" placeholder="Enter a title for the new task"/><br>
@@ -124,16 +129,55 @@ async function loadTaskAdministrationSection(){
                                 <input type="date" id="start-date"/>
                                 <label for="end-date"></label><br>
                                 <input type="date" id="end-date"/><br>
+                                <label for="task-users">Users with access to this task</label><br>
+                                <select id="task-users" multiple size="6">${memberOptionsHtml}</select><br>
+                                <label for="task-resources">Files/folders affiliated with this task</label><br>
+                                <select id="task-resources" multiple size="6">${resourceOptionsHtml}</select><br>
                                 <button>Add task</button>
                         </form>
                         <button onclick="removeTasks()">Remove tasks</button>`;
             newHtml += `<div id="pending-tasks" style="display: grid;gap=10px;margin: 10px;">
-                             
+
                         </div>`;
         }
         area.innerHTML = newHtml;
     }catch (error){
         alert(error);
+    }
+}
+async function buildProjectMembersOptions(){
+    try{
+        const url = `/projects/settings/${djangoContext.project.name}/api-get-roles`;
+        const response = await fetch(url, {
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCookie('csrftoken')
+            }
+        });
+        if(!response.ok) return '';
+        const data = await response.json();
+        const usernames = new Set();
+        (data.roles || []).forEach(role => (role.users || []).forEach(u => usernames.add(u)));
+        return Array.from(usernames).map(u => `<option value="${u}">${u}</option>`).join('');
+    }catch (error){
+        console.error("Could not load project members:", error);
+        return '';
+    }
+}
+async function buildProjectResourceOptions(){
+    try{
+        const owner = localStorage.getItem("owner_username");//djangoContext.project.owner_username;
+        const repo = localStorage.getItem("repo_name");//djangoContext.project.repo_name;
+        alert(owner+" din buildResource "+repo+" tot asa");
+        const url = `/projects/api/github/${owner}/${repo}/`;
+        const response = await fetch(url);
+        if(!response.ok) return '';
+        const tree = await response.json();
+        if(!Array.isArray(tree)) return '';
+        return tree.map(item => `<option value="${item.path}">${item.path} (${item.type})</option>`).join('');
+    }catch (error){
+        console.error("Could not load project file tree:", error);
+        return '';
     }
 }
 async function removeTasks(){
@@ -187,12 +231,15 @@ function renderPendingTasks(){
 async function addTask(){
     event.preventDefault();
      const form = document.getElementById("new-task");
-     const formData = new FormData(form);
+     const selectedUsers = Array.from(document.getElementById('task-users').selectedOptions).map(o => o.value);
+     const selectedResources = Array.from(document.getElementById('task-resources').selectedOptions).map(o => o.value);
      const data = {
         title: document.getElementById('title').value,
         description: document.getElementById('description').value,
         start_date: document.getElementById('start-date').value,
         end_date: document.getElementById('end-date').value,
+        usernames: selectedUsers,
+        resource_paths: selectedResources,
      };
      try{
         const desiredUrl = `/projects/settings/${djangoContext.project.name}/api-add-task`;

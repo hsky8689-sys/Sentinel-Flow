@@ -20,7 +20,7 @@ async function loadPage(context){
     const domains_div = document.getElementsByClassName("project-domains");
     if(role === 'visitor'){
         console.log('fetching requirements');
-        getProjectRequirements();
+        await getProjectRequirements();
     }
 }
 async function goToMainProjectPage(project_name){
@@ -60,12 +60,25 @@ async function goToProjectMembersPage(project_name){
 async function goToProjectSettings(project_name){
     const desiredUrl = `/projects/project-page/${project_name}/settings/`;
     const bailoutUrl = location.href;
+    let proj = window.djangoContext.project;
+    const repo_name = proj.repo_name;
+    const owner_username = proj.owner_username;
+    if(localStorage.getItem("repo_name") === null) localStorage.setItem("repo_name",repo_name);
+    if(localStorage.getItem("owner_username") === null) localStorage.setItem("owner_username",owner_username);
     try{
         const response = await fetch(desiredUrl, {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
         if (response.ok) {
             location.href = desiredUrl;
+            if(!window.djangoContext){
+                alert("Nu mai ajunge djangoContext in setari");
+            }
+            else{
+                proj.owner_username=localStorage.getItem("repo_name");
+                proj.repo_name=localStorage.getItem("owner_username");
+                alert(localStorage.getItem("repo_name")+" "+localStorage.getItem("owner_username"));
+            }
         } else {
             alert('Nu ai permisiunea sau pagina nu există.');
         }

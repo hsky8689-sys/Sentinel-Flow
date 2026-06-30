@@ -5,7 +5,6 @@ import django.db
 import requests
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
-from django.db.models import QuerySet
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import render
@@ -16,7 +15,7 @@ from django_ratelimit.decorators import ratelimit
 import users.views
 from devnetwork import settings
 from projects.models import Project, UserProjectRole, ProjectDomain, ProjectSkillRequirement, ProjectRequirementSection, \
-    ProjectTask, ProjectRole, ResourceAccess
+    ProjectTask, ProjectRole, ResourceAccess, TaskResourceAccess, ProjectTaskParticipation
 from users.models import User, UserRequest
 
 
@@ -30,6 +29,7 @@ def create_project(request):
                       'code' : 404
                       })
 @login_required
+@csrf_exempt
 def open_project_page(request,name):
     project = Project.objects.filter(name=name).first()
     if not project:
@@ -240,6 +240,48 @@ def api_get_project_tasks(request,name):
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': str(e), 'code': 404})
+def get_project_tree_paths(project, branch='main'):
+    """
+    Returns the set of every file/folder path that exists in the project's
+    github repo, reading from the same redis cache used by github_proxy_view.
+    If the tree isn't cached yet, it's fetched from the GitHub API and cached.
+    """
+    root_link_parts = project.root_link.split('/')
+    if len(root_link_parts) < 5:
+        return set()
+    owner, repo = root_link_parts[3], root_link_parts[4]
+
+    cache_key = f"github_tree_recursive_{owner}_{repo}_{branch}"
+    tree = cache.get(cache_key)
+    if tree:
+        return {item['path'] for item in tree}
+
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if hasattr(settings, 'GITHUB_TOKEN'):
+        headers["Authorization"] = f"token {settings.GITHUB_TOKEN}"
+
+    url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 404 and branch == 'main':
+        branch = 'master'
+        cache_key = f"github_tree_recursive_{owner}_{repo}_{branch}"
+        url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+        response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return set()
+
+    raw_tree = response.json().get('tree', [])
+    formatted_tree = [{
+        'name': item['path'].split('/')[-1],
+        'path': item['path'],
+        'type': 'dir' if item['type'] == 'tree' else 'file'
+    } for item in raw_tree]
+    cache.set(cache_key, formatted_tree, timeout=3600)
+    return {item['path'] for item in formatted_tree}
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_add_project_task(request,name):
@@ -252,9 +294,39 @@ def api_add_project_task(request,name):
         description = data.get('description')
         start_date = data.get('start_date')
         end_date = data.get('end_date')
-        return ProjectTask.objects.add_task_to_project(project,title,description,start_date,end_date)
+        usernames = data.get('usernames', [])
+        resource_paths = data.get('resource_paths', [])
+
+        # Only affiliate users that actually belong to this project
+        valid_users = []
+        for username in usernames:
+            target_user = User.objects.filter(username=username).first()
+            if target_user and UserProjectRole.objects.filter(project=project, user=target_user).exists():
+                valid_users.append(target_user)
+
+        # Only affiliate paths that actually exist in the project's repo
+        valid_resource_paths = []
+        if resource_paths:
+            project_paths = get_project_tree_paths(project)
+            valid_resource_paths = [path for path in resource_paths if path in project_paths]
+
+        task = ProjectTask.objects.add_task_to_project(project,title,description,start_date,end_date)
+        if not task:
+            return JsonResponse({'status':'error','message':'Task could not be created','code':400})
+        if valid_resource_paths:
+            TaskResourceAccess.objects.add_resources_to_task(task, valid_resource_paths)
+        if valid_users:
+            ProjectTaskParticipation.objects.add_task_participations(task, valid_users)
+
+        return JsonResponse({
+            'status': 'success',
+            'task_id': task.id,
+            'resource_paths': valid_resource_paths,
+            'affiliated_users': [u.username for u in valid_users]
+        }, status=200)
     except Exception as e:
         print(str(e))
+        return JsonResponse({'status':'error','message':str(e)},status=500)
 @csrf_exempt
 @require_http_methods(["DELETE"])
 def api_remove_project_tasks(request,name):
@@ -434,32 +506,18 @@ def api_get_availible_languages(request):
         return JsonResponse({'status':'error','message':str(e)},status=500)
 @login_required
 @require_http_methods(["POST"])
-def verify_push_permissions(request,project,file_list):
-    user = request.user
-    role = UserProjectRole.objects.get_user_role_in_project(project,user)
-    if role == 'visitor':
-        raise ValueError('Visitor cannot push into a project')
-    if not UserProjectRole.objects.get_role_permissions(role,project)['can_modify_files']:
-        raise ValueError('Visitor cannot modify files into the given project')
-    for file_path in file_list:
-        resource_access = ResourceAccess.objects.filter(project=project, resource_path=file_path).first()
-        if not resource_access:
-            continue#File doesn;t jhave sharing policies set up
-        if not request.user in resource_access.managers.all():
-            raise ValueError(f'User cannot change file located at {file_path}')
-@login_required
-@require_http_methods(["POST"])
 def push_files(request):
     #invalidate_repo_cache()
     try:
         data = json.loads(request.body)
         files = data.get('files',{})
         project = data.get('project')
-        verify_push_permissions(request,project,files)
         repo = data.get('repo')
         owner = data.get('owner')
         branch = data.get('branch')
         default_msg = data.get('message','')
+        if not TaskResourceAccess.objects.user_has_access_to_path(request.user,project,files):
+            return JsonResponse({'error': 'cannot push certain chosen files'}, status=401)
         if default_msg is None or default_msg == '':
             return JsonResponse({'error':'cannot push with no message'},status=400)
         message = f'[Pushed via GitSync]:{default_msg}'
