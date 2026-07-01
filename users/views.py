@@ -5,7 +5,7 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import render, redirect, get_object_or_404
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.views.decorators.http import require_http_methods
 from django.db import transaction
 
@@ -19,7 +19,7 @@ from .search import SearchManager, SearchFilterData
 def search_page(request):
     return render(request, 'html/search.html', {'user_id': request.user.id})
 @login_required
-@csrf_exempt
+@csrf_protect
 def search_api(request):
     if request.method == 'POST':
         try:
@@ -147,7 +147,7 @@ def create_project(request):
         Project.objects.create_project(user_id,name, description)
         return acces_profile(request,request.user.username)
 @require_http_methods(["POST"])
-@csrf_exempt
+@csrf_protect
 @transaction.atomic
 def api_add_skill(request):
     name = request.POST.get('name')
@@ -163,7 +163,7 @@ def api_add_skill(request):
     else:
         return JsonResponse({'status': 'error','message':'Skill was already added before'},status=500)
 @require_http_methods(["DELETE"])
-@csrf_exempt
+@csrf_protect
 @transaction.atomic
 def api_delete_skill(request,skill_id):
     try:

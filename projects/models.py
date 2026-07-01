@@ -2,7 +2,9 @@ from collections import defaultdict
 from datetime import datetime
 
 import django.db
-from django.db import models
+from django.db import models,transaction
+from django.db.models import QuerySet
+from django.template.defaultfilters import title
 
 from users.models import User
 
@@ -23,9 +25,11 @@ class ProjectManager(models.Manager):
         :param user: The future project creator and owner
         :return:
         """
-        proj = self.create(owner_id=user, name=name, description=description)
-        default_roles = ProjectRole.objects.create_default_project_roles(proj)
-        UserProjectRole.objects.give_role(proj.owner, proj, default_roles[0][0].id)
+        with transaction.atomic():
+            proj = self.create(owner_id=user, name=name, description=description)
+            default_roles = ProjectRole.objects.create_default_project_roles(proj)
+            UserProjectRole.objects.give_role(proj.owner, proj, default_roles[0][0].id)
+        return proj
 
     def delete_project(self, project):
         """
@@ -33,8 +37,12 @@ class ProjectManager(models.Manager):
         :param project:
         :return:
         """
-        Project.objects.get(id=project.id).delete()
-        return Project.objects.filter(id=project.id).count() == 0
+        try:
+            deleted_count,_=Project.objects.get(id=project.id).delete()
+            return deleted_count
+        except django.db.DatabaseError as e:
+            print(str(e))
+            return 0
 
     def get_user_projects(self, user):
         """
@@ -42,7 +50,7 @@ class ProjectManager(models.Manager):
         :param project:
         :return:
         """
-        #return self.filter(id__in=UserProjectRole.objects.filter(user_id=user.id)).values_list('id',flat=True)
+        return self.filter(id__in=UserProjectRole.objects.filter(user_id=user.id)).values_list('id',flat=True)
 
 
 class Project(models.Model):
@@ -63,9 +71,14 @@ class ProjectDomainManager(models.Manager):
         :param domain_names:
         :return:
         """
-        domains = [ProjectDomain(project=project, domain=name) for name in domain_names]
-        succes = self.bulk_create(domains)
-        return succes
+        try:
+            with transaction.atomic():
+                domains = [ProjectDomain(project=project, domain=name) for name in domain_names]
+                succes = self.bulk_create(domains)
+            return succes
+        except django.db.DatabaseError as e:
+            print(str(e))
+            return None
 
     def remove_domains_from_project(self, project, domain_names):
         """
@@ -75,8 +88,8 @@ class ProjectDomainManager(models.Manager):
         :return:
         """
         try:
-            domains = self.filter(project=project, domain__in=domain_names).delete()
-            return domains
+            deleted_count,_ = self.filter(project=project, domain__in=domain_names).delete()
+            return deleted_count > 0
         except django.db.DatabaseError as e:
             print(str(e))
 
@@ -100,27 +113,27 @@ class ProjectTaskManager(models.Manager):
             return taskuri
         except django.db.DatabaseError as e:
             print(str(e))
-            return []
+            return QuerySet()
 
     def add_task_to_project(self, project, name, description, start_date, end_date):
         try:
-            _start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-            _end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-            var = self.filter(project=project,name=name)
-            print(var.count())
-            if self.filter(project=project,name=name).count() > 0:
-                return
-            if _start_date > _end_date:
-                return
-            if len(description) > 300:
-                return
-            return self.create(project_id=project.id,
-                               name=name,
-                               description=description,
-                               start_date=start_date,
-                               end_date=end_date,
-                               finished=False
-                               )
+            with transaction.atomic():
+                _start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+                _end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+                var = self.filter(project=project,name=name)
+                if var.count() > 0:
+                    return []
+                if _start_date > _end_date:
+                    return []
+                if len(description) > 300:
+                    return []
+                return self.create(project_id=project.id,
+                                   name=name,
+                                   description=description,
+                                   start_date=start_date,
+                                   end_date=end_date,
+                                   finished=False
+                                   )
         except django.db.DatabaseError as e:
             print(str(e))
             return []
@@ -128,10 +141,11 @@ class ProjectTaskManager(models.Manager):
     def remove_tasks_from_project(self,tasks):
         try:
             searched = self.filter(name__in=tasks)
-            return searched.delete()
+            deleted_count,_=searched.delete()
+            return deleted_count > 0
         except django.db.DatabaseError as e:
             print(str(e))
-            return []
+            return 0
 
 class ProjectTask(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
@@ -404,10 +418,13 @@ class ProjectRequiementSectionManager(models.Manager):
         :return:
         """
         try:
-            former_sections = self.filter(project=project, name__in=names).delete()
-            return former_sections
+            with transaction.atomic():
+                former_sections = self.filter(project=project, name__in=names).select_for_update()
+                deleted_count,_=former_sections.delete()
+                return deleted_count
         except django.db.DatabaseError as e:
             print(str(e))
+            return 0
 
     def change_requirement_sections_titles(self, project, old_names, new_names):
         """
@@ -418,12 +435,14 @@ class ProjectRequiementSectionManager(models.Manager):
         :return:
         """
         try:
-            former_sections = self.select_for_update(project=project, name__in=old_names)
-            for section in former_sections:
-                pass
-            return former_sections
+            with transaction.atomic():
+                former_sections = self.select_for_update().filter(project=project, name__in=old_names).distinct()
+                for index in range(len(former_sections)):
+                    former_sections[index].title = new_names[index]
+                return former_sections.bulk_update(former_sections,['title'],1000)
         except django.db.DatabaseError as e:
             print(str(e))
+            return 0
 
 
 class ProjectRequirementSection(models.Model):

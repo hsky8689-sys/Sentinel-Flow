@@ -11,7 +11,7 @@ from django.db.models import Max
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import render
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.views.decorators.http import require_http_methods, require_POST
 from django_ratelimit.decorators import ratelimit
 
@@ -25,7 +25,6 @@ from users.models import User, UserRequest
 @login_required
 def create_project(request):
     if request.method == 'POST':
-
         users.views.acces_profile(request,request.user.username)
     else:
         return JsonResponse({'status': 'error',
@@ -89,7 +88,7 @@ def open_project_members_page(request,name):
     return render(request, 'html/project_members_page.html', {'stats': stats})
 
 @login_required
-@csrf_exempt
+@csrf_protect
 def open_project_settings(request, name):
     project = get_object_or_404(Project, name=name)
     user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
@@ -106,7 +105,7 @@ def open_project_settings(request, name):
     }
     return render(request, 'html/project_settings_page.html', {'stats': context_data})
 @require_http_methods(["GET"])
-@csrf_exempt
+@csrf_protect
 def api_get_project_domains(request,name):
     try:
         project = get_object_or_404(Project,name=name)
@@ -115,7 +114,7 @@ def api_get_project_domains(request,name):
     except django.db.DatabaseError:
         return JsonResponse({'status': 'error', 'code': 500})
 @require_http_methods(["POST"])
-@csrf_exempt
+@csrf_protect
 def api_add_project_domains(request,name):
     try:
         if request.method == 'POST':
@@ -135,27 +134,29 @@ def api_add_project_domains(request,name):
     except django.db.DatabaseError:
         return JsonResponse({'status': 'error', 'code': 500})
 @require_http_methods(["POST"])
-@csrf_exempt
+@csrf_protect
 def api_delete_project_domains(request,name):
     try:
-        if request.method == 'POST':
             project = get_object_or_404(Project, name=name)
             role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
             if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
                 data = json.loads(request.body)
                 domains = data.get('removedDomains', [])
-                succes = ProjectDomain.objects.remove_domains_from_project(project, domains)
-                return JsonResponse({'status': 'succes' if len(succes) == len(domains) else 'error',
-                                     'code': 200 if len(succes) == len(domains) else 404
-                                     })
-            else:
-                return JsonResponse({'status': 'Unauthorized access', 'code': 403})
+                if domains is None or len(domains) == 0:
+                    return JsonResponse({'status': 'Bad request by user','message':'No domains were added into request'},status=402)
+                success = ProjectDomain.objects.remove_domains_from_project(project, domains)
+                if success:
+                    return JsonResponse({'status': 'succes','message':'Requested domains were succesfully removed'
+                                     },status=200)
+                else:
+                    return JsonResponse({'status': 'error','message':'Internal server error'
+                                         },status=500)
     except Exception as e:
         print(str(e))
     except django.db.DatabaseError:
         return JsonResponse({'status': 'error', 'code': 500})
 @require_http_methods(["GET"])
-@csrf_exempt
+@csrf_protect
 def api_get_project_requirements(request,name):
     try:
         project = get_object_or_404(Project,name=name)
@@ -166,7 +167,7 @@ def api_get_project_requirements(request,name):
     except django.db.DatabaseError:
         return JsonResponse({'status': 'error', 'code': 404})
 @require_http_methods(["POST"])
-@csrf_exempt
+@csrf_protect
 def api_add_project_requirements(request,name):
     try:
         project = get_object_or_404(Project, name=name)
@@ -174,6 +175,9 @@ def api_add_project_requirements(request,name):
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             data = json.loads(request.body)
             requirements = data.get('newRequirements',[])
+            if requirements is None or len(requirements) == 0:
+                return JsonResponse({'status': 'Bad request by user', 'message': 'No requirements were added into request'},
+                                    status=402)
             manager = ProjectSkillRequirement.objects
             section_manager = ProjectRequirementSection.objects
             batches = {}
@@ -185,15 +189,15 @@ def api_add_project_requirements(request,name):
             for key in batches.keys():
                 section = section_manager.get(project=project,name=key)
                 manager.add_skill_requirements(section,batches[key])
-            return JsonResponse({'status':'succes'})
+            return JsonResponse({'status':'success','message':'Requirements were succesfully added'},status=200)
         else:
-            return JsonResponse({'status': 'Unauthorized access', 'code': 403})
+            return JsonResponse({'status': 'Unauthorized access'},status=403)
     except Exception as e:
         print(str(e))
     except django.db.DatabaseError:
         return JsonResponse({'status': 'error', 'code': 404})
 @require_http_methods(["POST"])
-@csrf_exempt
+@csrf_protect
 def api_remove_project_requirements(request,name):
     try:
         project = get_object_or_404(Project, name=name)
@@ -201,6 +205,8 @@ def api_remove_project_requirements(request,name):
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             data = json.loads(request.body)
             requirements = data.get('removedRequirements',[])
+            if requirements is None or len(requirements) == 0:
+                return JsonResponse({'status': 'bad request', 'message':'No requirements added'},status=402)
             manager = ProjectSkillRequirement.objects
             section_manager = ProjectRequirementSection.objects
             batches = {}
@@ -220,7 +226,7 @@ def api_remove_project_requirements(request,name):
     except django.db.DatabaseError:
         return JsonResponse({'status': 'error', 'code': 404})
 @require_http_methods(["POST"])
-@csrf_exempt
+@csrf_protect
 def api_remove_project_sections(request,name):
     try:
         project = get_object_or_404(Project, name=name)
@@ -228,16 +234,21 @@ def api_remove_project_sections(request,name):
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             data = json.loads(request.body)
             requirements = data.get('removedSections',[])
-            ProjectRequirementSection.objects.remove_requirement_sections(project,requirements)
-            return JsonResponse({'status':'succes'})
+            if requirements is None or requirements == []:
+                return JsonResponse({'status': 'error', 'message': 'No sections were requested for deletion'}, status=400)
+            deleted = ProjectRequirementSection.objects.remove_requirement_sections(project,requirements)
+            if deleted == 0:
+                return JsonResponse({'status': 'error', 'message':'Could not delete sections'},status=500)
+            else:
+                return JsonResponse({'status':'succes','message':'Sections were succesfully deleted'},status=200)
         else:
-            return JsonResponse({'status': 'Unauthorized access', 'code': 403})
+            return JsonResponse({'status': 'Unauthorized access'},status=403)
     except Exception as e:
-        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
     except django.db.DatabaseError:
-        return JsonResponse({'status': 'error', 'code': 404})
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
 @require_http_methods(["POST"])
-@csrf_exempt
+@csrf_protect
 def api_add_project_sections(request,name):
     try:
         project = get_object_or_404(Project, name=name)
@@ -245,15 +256,21 @@ def api_add_project_sections(request,name):
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             data = json.loads(request.body)
             requirements = data.get('newSections',[])
-            ProjectRequirementSection.objects.add_requirement_sections(project,requirements)
-            return JsonResponse({'status':'succes'})
+            if requirements is None or len(requirements) == 0:
+                return JsonResponse({'status': 'bad request','message': 'No sections added to the request'}, status=402)
+            res = ProjectRequirementSection.objects.add_requirement_sections(project,requirements)
+            if res is None or len(res) == 0:
+                return JsonResponse({'status': 'error', 'message': 'Sections could not be added'},status=500)
+            return JsonResponse({'status':'succes','message':'Sections were successfully added'},status=200)
         else:
-            return JsonResponse({'status': 'Unauthorized access', 'code': 403})
+            return JsonResponse({'status': 'Unauthorized access'},status=403)
     except Exception as e:
         print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
     except django.db.DatabaseError:
-        return JsonResponse({'status': 'error', 'code': 404})
-@csrf_exempt
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
+@login_required
+@csrf_protect
 @require_http_methods(["GET"])
 def api_get_project_tasks(request,name):
     try:
@@ -261,12 +278,19 @@ def api_get_project_tasks(request,name):
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             tasks = ProjectTask.objects.get_project_tasks(project).values()
-            return JsonResponse({'status': 'succes','tasks':list(tasks)})
+            if tasks is None or len(tasks) == 0:
+                return JsonResponse({'status': 'success',
+                                          'message':'Tasks were successfully retrieved',
+                                          'tasks':list(tasks)},status=200)
+            else:
+                return JsonResponse({'status':'success',
+                                          'message':'No tasks were found for the given project',
+                                          'tasks':[]},status=404)
         else:
-            return JsonResponse({'status': 'Unauthorized access', 'code': 403})
+            return JsonResponse({'status': 'Unauthorized access'},status=403)
     except Exception as e:
         print(str(e))
-        return JsonResponse({'status': str(e), 'code': 404})
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
 def get_project_owner_repo(project):
     root_link_parts = project.root_link.split('/')
     if len(root_link_parts) < 5:
@@ -363,14 +387,12 @@ def api_add_project_task(request,name):
         usernames = data.get('usernames', [])
         resource_paths = data.get('resource_paths', [])
 
-        # Only affiliate users that actually belong to this project
         valid_users = []
         for username in usernames:
             target_user = User.objects.filter(username=username).first()
             if target_user and UserProjectRole.objects.filter(project=project, user=target_user).exists():
                 valid_users.append(target_user)
 
-        # Only affiliate paths that actually exist in the project's repo
         valid_resource_paths = []
         if resource_paths:
             project_paths = get_project_tree_paths(project)
@@ -393,7 +415,8 @@ def api_add_project_task(request,name):
     except Exception as e:
         print(str(e))
         return JsonResponse({'status':'error','message':str(e)},status=500)
-@csrf_exempt
+@login_required
+@csrf_protect
 @require_http_methods(["DELETE"])
 def api_remove_project_tasks(request,name):
     try:
@@ -402,13 +425,18 @@ def api_remove_project_tasks(request,name):
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             data = json.loads(request.body)
             requirements = data.get('removedTasks', [])
-            ProjectTask.objects.remove_tasks_from_project(requirements)
-            return JsonResponse({'status':'succes','message':200})
+            if requirements is None or len(requirements) == 0:
+                return JsonResponse({'status': 'bad request',
+                                          'message': 'No tasks queued for removal'},
+                                          status=402)
+            deleted = ProjectTask.objects.remove_tasks_from_project(requirements)
+            return JsonResponse({'status':'succes' if deleted else 'error',
+                                 'message':'Tasks were successfully removed' if deleted else 'Tasks were not removed'},
+                                  status=200 if deleted else 500)
         else:
-            return JsonResponse({'status': 'Unauthorized access', 'code': 403})
+            return JsonResponse({'status': 'Unauthorized access'},status=403)
     except Exception as e:
-        return JsonResponse({'status':'error','message':str(e),'code':405})
-
+        return JsonResponse({'status':'error','message':'Internal server error'},status=500)
 
 @login_required
 @require_http_methods(["GET"])
@@ -758,7 +786,7 @@ def push_files(request):
 
 @login_required
 @require_http_methods(["POST"])
-@csrf_exempt
+@csrf_protect
 def api_add_project_role(request, project_id):
     try:
         project = get_object_or_404(Project, id=project_id)
@@ -799,7 +827,7 @@ def api_add_project_role(request, project_id):
 
 @login_required
 @require_http_methods(["POST"])
-@csrf_exempt
+@csrf_protect
 def api_assign_users_to_role(request, id):
     try:
         project = get_object_or_404(Project,id=id)
@@ -839,7 +867,7 @@ def api_assign_users_to_role(request, id):
 
 @login_required
 @require_http_methods(["POST"])
-@csrf_exempt
+@csrf_protect
 def api_share_file_access(request, name):
     try:
         project = get_object_or_404(Project, name=name)
@@ -885,22 +913,19 @@ def api_request_project_join(request, project_id):
     try:
         project = get_object_or_404(Project, id=project_id)
 
-        # 1. Verificăm dacă e deja membru
         if UserProjectRole.objects.get_user_role_in_project(project, request.user) != 'visitor':
             return JsonResponse({'status': 'error', 'message': 'Already member of this project.'}, status=400)
 
-        # 2. Verificăm dacă există deja o cerere în așteptare pentru acest proiect
         pending_exists = UserRequest.objects.filter(
             sender=request.user,
             request_type='project',
-            target=str(project.id),  # Căutăm după noul câmp target
+            target=str(project.id),
             status='pending'
         ).exists()
 
         if pending_exists:
             return JsonResponse({'status': 'error', 'message': 'Already requested to join this project.'}, status=400)
 
-        # 3. Găsim adminii proiectului
         project_admins = User.objects.filter(
             user__project=project,
             user__role__can_change_project_settings=True
@@ -909,14 +934,13 @@ def api_request_project_join(request, project_id):
         if not project_admins.exists():
             return JsonResponse({'status': 'error', 'message': 'Project has no registered admins'}, status=500)
 
-        # 4. Creăm/Actualizăm cererea pentru admini
         for admin in project_admins:
             UserRequest.objects.update_or_create(
                 sender=request.user,
                 receiver=admin,
                 defaults={
                     'request_type': 'project',
-                    'target': str(project.id),  # Salvăm ID-ul proiectului ca string!
+                    'target': str(project.id),
                     'status': 'pending'
                 }
             )
@@ -950,15 +974,12 @@ def api_handle_project_join_request(request):
 
         project = get_object_or_404(Project, id=int(user_req.target))
 
-        # 4. Verificăm dacă userul care a cerut accesul nu cumva a intrat deja în proiect între timp
         if UserProjectRole.objects.get_user_role_in_project(project, user_req.sender) != 'visitor':
             user_req.status = 'accepted'
             user_req.save()
             return JsonResponse({'status': 'error', 'message': 'User is already a member of this project.'}, status=400)
 
-        # 5. Executăm logica în funcție de decizia luată în UI
         if action == 'accept':
-            # Îi creăm rolul de membru în proiect
             UserProjectRole.objects.create(
                 user=user_req.sender,
                 project=project,
@@ -969,7 +990,7 @@ def api_handle_project_join_request(request):
             return JsonResponse({'status': 'success', 'message': 'User successfully added to the project!'}, status=200)
 
         elif action in ['reject', 'deny', 'declined']:
-            # Folosim 'declined' pentru că așa ai definit în model choices/constraints
+
             user_req.status = 'declined'
             user_req.save()
             return JsonResponse({'status': 'success', 'message': 'Project join request declined.'}, status=200)
@@ -1011,7 +1032,6 @@ def api_handle_file_access_request(request):
             user_req.save()
             return JsonResponse({'status': 'success', 'message': 'File access request declined.'}, status=200)
 
-        # target looks like: "Requesting acces for files ['a.py', 'b.py'] in project myproj"
         match = re.search(r"files (\[.*\]) in project (.+)$", user_req.target or '')
         if not match:
             user_req.status = 'declined'
