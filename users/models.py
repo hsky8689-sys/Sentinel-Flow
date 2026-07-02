@@ -1,3 +1,4 @@
+import re
 import django.db
 from django.db.models import Q
 from django.db import models,transaction
@@ -322,6 +323,38 @@ class RequestManager(models.Manager):
             print(str(e))
             return None
 
+    def handle_move_file_access_request(self,sender,receiver,response):
+        from projects.models import Project, ResourceAccess
+        try:
+            with transaction.atomic():
+                found = self.select_for_update().filter(
+                    sender=sender,
+                    receiver=receiver,
+                    request_type='move_file_access',
+                    status='pending'
+                ).first()
+                if found is None:
+                    return False
+                if response == 'ACCEPT':
+                    match = re.match(r'\[.*?\]Requesting acces for URL:(.*) in project (.*)$', found.target or '')
+                    if not match:
+                        transaction.set_rollback(True)
+                        return False
+                    file_url, project_name = match.group(1), match.group(2)
+                    project = Project.objects.filter(name=project_name).first()
+                    if project is None:
+                        transaction.set_rollback(True)
+                        return False
+                    if not ResourceAccess.objects.lock_file(file_url, project, found.sender):
+                        transaction.set_rollback(True)
+                        return False
+                found.status = 'accepted' if response == 'ACCEPT' else 'declined'
+                found.save(update_fields=['status'])
+                return True
+        except django.db.DatabaseError as e:
+            print(str(e))
+            return False
+
     def send_project_invitation(self,sender,receiver):
         print('te rog')#e mecanic...il fac alta data...
 
@@ -338,8 +371,22 @@ class RequestManager(models.Manager):
         except django.db.DatabaseError as e:
             print(str(e))
 
+    def send_file_move_access_request(self,file,sender,receiver,project):
+        try:
+            with transaction.atomic():
+                return self.create(
+                    sender_id=sender.id,
+                    receiver_id=receiver.id,
+                    status='pending',
+                    request_type='move_file_access',
+                    target='[{}]Requesting acces for URL:{} in project {}'.format(sender.username,file,project.name)
+                ) is not None
+        except django.db.DatabaseError as e:
+            print(str(e))
+            return False
+
 class UserRequest(models.Model):
-    pk = models.CompositePrimaryKey("sender_id","receiver_id")
+    id = models.BigAutoField(primary_key=True)
     sender = models.ForeignKey(
             User,
             on_delete=models.CASCADE,
@@ -353,7 +400,7 @@ class UserRequest(models.Model):
     timestamp = models.DateTimeField(default=datetime.now,db_index=True)
     request_type = models.CharField(
         max_length=20,
-        choices=[('friend', 'friend'), ('project', 'project'), ('file_access', 'file_access')]
+        choices=[('friend', 'friend'), ('project', 'project'), ('file_access', 'file_access'), ('move_file_access', 'move_file_access')]
     )
     target = models.CharField(max_length=255, null=True, blank=True, db_index=True,default=None)
     status = models.CharField(
@@ -365,7 +412,7 @@ class UserRequest(models.Model):
         db_table = 'requests'
         constraints = [
             models.CheckConstraint(
-                condition=Q(request_type__in=['friend','project','file_access']),
+                condition=Q(request_type__in=['friend','project','file_access','move_file_access']),
                 name='check_valid_request_type',
             ),
             models.CheckConstraint(

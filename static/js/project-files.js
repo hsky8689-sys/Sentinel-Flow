@@ -86,9 +86,9 @@ async function displayFileContent(path){
     updateActionButtonsVisibility(path);
 
     if(repoCache[path]){
-        alert('fisierul era in cache');
         console.log(`Afisam cache pentru: ${path}`)
         renderCode(repoCache[path])
+        requestFileWriteAccess(path);
         return;
     }
     const desiredUrl = `/projects/api/github/${window.djangoContext.project.owner_username}/${window.djangoContext.project.repo_name}/${path}`;
@@ -107,9 +107,35 @@ async function displayFileContent(path){
         const decodedContent = decodeURIComponent(escape(atob(base64content)));
         repoCache[path] = decodedContent;
         renderCode(decodedContent);
+        requestFileWriteAccess(path);
     }catch(error){
         console.error("Eroare la fișier:", error);
         alert("Nu am putut încărca fișierul.");
+    }
+}
+async function requestFileWriteAccess(path){
+    try{
+        const response = await fetch('/projects/api/requests/file-writers/', {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                project: window.djangoContext.project.name,
+                file_url: path
+            })
+        });
+        const data = await response.json().catch(() => ({}));
+        if(response.ok && data.status === 'success'){
+            if(data.message === 'Request was successfully sent'){
+                alert('Fișierul este deschis de altcineva. Am trimis o cerere de permisiune.');
+            }
+        }else{
+            console.error('Nu am putut obține acces de scriere:', data.message || response.statusText);
+        }
+    }catch(error){
+        console.error('Eroare la cererea de acces de scriere:', error);
     }
 }
 function renderCode(content) {

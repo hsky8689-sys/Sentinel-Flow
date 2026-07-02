@@ -25,7 +25,7 @@ SECRET_KEY = config('SECRET_KEY')
 RAPIDAPI_KEY = config("RAPIDAPI_KEY")
 RAPIDAPI_HOST = config("RAPIDAPI_HOST")
 RAPIDAPI_URL = config("RAPIDAPI_URL")
-SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+#SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG',default=False,cast=bool)

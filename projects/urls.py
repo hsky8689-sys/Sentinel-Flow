@@ -6,7 +6,7 @@ from projects.views import open_project_page, open_project_members_page, open_pr
     api_add_project_task, api_remove_project_tasks, api_get_project_roles, \
     github_proxy_view, proxy_run_code, push_files, api_add_project_role, api_assign_users_to_role, \
     api_get_availible_languages, api_request_project_join, api_handle_project_join_request, request_file_open, \
-    api_handle_file_access_request
+    api_handle_file_access_request, api_request_file_share, api_handle_request_file_share
 
 app_name = 'projects'
 
@@ -38,7 +38,9 @@ urlpatterns = [
     path('get-available-languages',api_get_availible_languages,name="view-selected-languages"),
     path('api/<int:project_id>/request-join',api_request_project_join,name='send-project-join-request'),
     path('api/requests/project/handle/',api_handle_project_join_request,name='handle-project-join-request'),
-    path('api/requests/file-access/handle/',api_handle_file_access_request,name='handle-file-access-request')
+    path('api/requests/file-access/handle/',api_handle_file_access_request,name='handle-file-access-request'),
+    path('api/requests/file-writers/',api_request_file_share,name='request-file-share'),
+    path('api/requests/file-writers/handle',api_handle_request_file_share,name='handle-request-file-share')
 ]
 
 
