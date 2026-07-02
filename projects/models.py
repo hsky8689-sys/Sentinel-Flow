@@ -1,3 +1,4 @@
+from django.utils import timezone
 from collections import defaultdict
 from datetime import datetime
 
@@ -520,6 +521,30 @@ class ProjectSkillRequirement(models.Model):
     class Meta:
         db_table = 'project_skill_requirements'
 
+class ResourceAccessManager(models.Manager):
+    def is_file_locked(self,file_url,project):
+        try:
+            entry = self.filter(resource_path=file_url,project=project).select_related('locked_by').first()
+            return entry.locked_by if entry else None
+        except django.db.DatabaseError as e:
+            print(str(e))
+            return None
+
+    def lock_file(self, file_url, project, new_writer):
+        try:
+            with transaction.atomic():
+                file_obj = self.filter(resource_path=file_url,project=project).select_for_update()
+                new_lock_time = timezone.now() if new_writer else None
+                if file_obj.exists():
+                    return file_obj.update(locked_by=new_writer,locked_at=new_lock_time) != 0
+                else:
+                    return self.create(resource_path=file_url,
+                                       project=project,
+                                       locked_by=new_writer,
+                                       locked_at=new_lock_time) is not None
+        except (self.model.DoesNotExist,django.db.DatabaseError) as e:
+            print(str(e))
+            return False
 
 class ResourceAccess(models.Model):
     project = models.ForeignKey(Project, on_delete=models.CASCADE)
@@ -528,6 +553,7 @@ class ResourceAccess(models.Model):
     managers = models.ManyToManyField(User, related_name='managed_resources', blank=True)
     locked_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,related_name='locked_resources')
     locked_at = models.DateTimeField(null=True, blank=True)
+    objects = ResourceAccessManager()
     class Meta:
         unique_together = ('project', 'resource_path')
 

@@ -748,10 +748,21 @@ def push_files(request):
         default_msg = data.get('message','')
         role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
         if role != 'owner':
-            if not TaskResourceAccess.objects.user_has_access_to_path(request.user,project,files):
+            if not all(TaskResourceAccess.objects.user_has_access_to_path(request.user,project,path) for path in files):
                 return JsonResponse({'error': 'cannot push certain chosen files'}, status=401)
             if default_msg is None or default_msg == '':
                 return JsonResponse({'error':'cannot push with no message'},status=400)
+
+            locked_by_others = {}
+            for path in files:
+                holder = ResourceAccess.objects.is_file_locked(path, project)
+                if holder is not None and holder.id != request.user.id:
+                    locked_by_others[path] = holder.username
+            if locked_by_others:
+                return JsonResponse({
+                    'error': 'some files are locked by another user',
+                    'locked_files': locked_by_others
+                }, status=423)
         message = f'[Pushed via GitSync]:{default_msg}'
 
         headers = {
@@ -1093,3 +1104,125 @@ def api_handle_file_access_request(request):
         return JsonResponse({'status': 'error', 'message': 'Invalid JSON format.'}, status=400)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+@login_required
+@csrf_protect
+@require_POST
+def api_request_file_share(request):
+    try:
+        data = json.loads(request.body)
+        sender = request.user
+        if not sender.is_authenticated:
+            return JsonResponse({
+                                      'status': 'error',
+                                      'message': 'User is not authenticated'
+                                      },status='400')
+        project_name=data.get('project','')
+        file_url=data.get('file_url','')
+        if file_url == '':
+            return JsonResponse({
+                'status': 'Bad request',
+                'message': 'User did not add a file to the request'
+            }, status='402')
+        project = get_object_or_404(Project,name=project_name)
+
+        project_files = get_project_tree_paths(project,'main')
+        # de facut branch-uri si cacheuit cumva asta.....
+        if not file_url in project_files:
+            return JsonResponse({
+                'status': 'Bad request',
+                'message': 'User requested permission to a file from another project'
+            }, status='402')
+
+        user_role = UserProjectRole.objects.get_user_role_in_project(project, sender)
+        if user_role != 'owner':
+            permissions = UserProjectRole.objects.get_role_permissions(user_role, project)
+            if not permissions['can_modify_files']:
+                return JsonResponse({'status': 'unauthorized access'}, status='403')
+
+            task_access = TaskResourceAccess.objects
+            if not task_access.user_has_access_to_path(sender, project,file_url):
+                return JsonResponse({'status': 'unauthorized access',
+                                          'message':'User does not have access to file'}, status='403')
+
+        resource_access = ResourceAccess.objects
+        current_writer = resource_access.is_file_locked(file_url,project)
+        if current_writer is None or current_writer.id == sender.id:
+            res = resource_access.lock_file(file_url,project,sender)
+            return JsonResponse({'status':'success' if res else 'error',
+                                      'message':'File successfully locked' if res else 'Could not lock file'
+                                      },status=200 if res else 500)
+        else:
+            res = UserRequest.objects.send_file_move_access_request(file_url,sender,current_writer,project)
+            return JsonResponse({'status': 'success' if res else 'error',
+                                 'message': 'Request was successfully sent' if res else 'Could not send request'
+                                 }, status=200 if res else 500)
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
+@login_required
+@csrf_protect
+@require_POST
+def api_handle_request_file_share(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({
+            'status': 'error',
+            'message': 'User is not authenticated'
+        }, status='400')
+    try:
+        data = json.loads(request.body)
+        response = data.get('response')
+        sender_id = data.get('sender_id')
+        receiver_id = data.get('receiver_id')
+
+        checked = UserRequest.objects.filter(
+            sender_id=sender_id,receiver_id=receiver_id,request_type='move_file_access'
+        ).order_by('-timestamp').first()
+
+        if checked is None:
+            return JsonResponse({
+                'status': 'Not found',
+                'message': 'File share requests with sender_id:{} and receiver_id:{} was not found'.format(sender_id,receiver_id)
+            }, status='404')
+
+        receiver_id = checked.receiver_id
+        if receiver_id != request.user.id:
+            return JsonResponse({
+                'status': 'Bad request',
+                'message': 'File share requests may only be handled by the receiver'
+            }, status='403')#pe viitor o sa modific ca owneru sa aiba drept suprem...
+
+        if checked.request_type != 'move_file_access':
+            return JsonResponse({
+                'status': 'Bad request',
+                'message': 'File share requests with sender_id:{} and receiver_id:{} has wrong type for this request:{}'.format(sender_id,receiver_id,checked.request_type)
+            }, status='402')
+        if checked.status != 'pending':
+            return JsonResponse({
+                'status': 'Bad request',
+                'message': 'File share requests with sender_id:{} and receiver_id:{} has already been {}'.format(
+                    sender_id,receiver_id,checked.status)
+            }, status='402')
+
+        if response == 'ACCEPT':
+            res = UserRequest.objects.handle_move_file_access_request(sender_id,receiver_id,response)
+            status='success' if res else 'error'
+            message='Request with with sender_id:{} and receiver_id:{} has been successfully accepted'.format(sender_id,receiver_id)
+            status_code=200 if res else 500
+            return JsonResponse({'status':status,
+                                      'message':message},
+                                      status=status_code)
+        elif response == 'DENY':
+            res = UserRequest.objects.handle_move_file_access_request(sender_id,receiver_id,response)
+            status = 'success' if res else 'error'
+            message = 'Request with sender_id:{} and receiver_id:{} has been successfully declined'.format(sender_id,receiver_id)
+            status_code = 200 if res else 500
+            return JsonResponse({'status': status,
+                                 'message': message},
+                                status=status_code)
+        else:
+            return JsonResponse({'status':'bad request',
+                                 'message':'{} is not a valid user request response'
+                                 ',choose "ACCEPT/DENY" the next time'.format(response)},status=402)
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
