@@ -110,8 +110,7 @@ class ProjectDomain(models.Model):
 class ProjectTaskManager(models.Manager):
     def get_project_tasks(self, project):
         try:
-            taskuri = self.select_related('project').filter(project=project)
-            return taskuri
+            return self.select_related('project').filter(project=project)
         except django.db.DatabaseError as e:
             print(str(e))
             return QuerySet()

@@ -285,15 +285,15 @@ def api_get_project_tasks(request,name):
         project = get_object_or_404(Project, name=name)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
-            tasks = ProjectTask.objects.get_project_tasks(project).values()
+            tasks = list(ProjectTask.objects.get_project_tasks(project).values())
             if tasks is None or len(tasks) == 0:
                 return JsonResponse({'status': 'success',
-                                          'message':'Tasks were successfully retrieved',
-                                          'tasks':list(tasks)},status=200)
+                                     'message': 'No tasks were found for the given project',
+                                     'tasks': []}, status=404)
             else:
-                return JsonResponse({'status':'success',
-                                          'message':'No tasks were found for the given project',
-                                          'tasks':[]},status=404)
+                return JsonResponse({'status': 'success',
+                                     'message': 'Tasks were successfully retrieved',
+                                     'tasks': tasks}, status=200)
         else:
             return JsonResponse({'status': 'Unauthorized access'},status=403)
     except Exception as e:
