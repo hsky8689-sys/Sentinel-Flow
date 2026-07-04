@@ -12,11 +12,11 @@
         <div class="requests-list">
             {% for req in context.requests %}
                 {% if req.request_type == 'friend' and req.status == 'pending' %}
-                <div class="request-card" id="req-friend-{{ req.sender_id }}-{{ req.receiver_id }}">
+                <div class="request-card" id="req-friend-{{ req.id }}">
                     <span>Cerere de la <strong>{{ req.sender.username }}</strong></span>
                     <div class="actions">
-                        <button class="btn-accept" onclick="handleFriendRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'accept')">Accept</button>
-                        <button class="btn-reject" onclick="handleFriendRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'reject')">Reject</button>
+                        <button class="btn-accept" onclick="handleFriendRequest({{ req.id }}, 'accept')">Accept</button>
+                        <button class="btn-reject" onclick="handleFriendRequest({{ req.id }}, 'reject')">Reject</button>
                     </div>
                 </div>
                 {% endif %}

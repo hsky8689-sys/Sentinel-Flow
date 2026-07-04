@@ -1,5 +1,6 @@
 import re
 import django.db
+from django.core.validators import validate_slug
 from django.db.models import Q
 from django.db import models,transaction
 from django.contrib.auth.models import AbstractBaseUser,BaseUserManager,PermissionsMixin
@@ -25,7 +26,7 @@ class CustomUserManager(BaseUserManager):
         return self.get(**{self.model.USERNAME_FIELD:username})
 
 class User(AbstractBaseUser,PermissionsMixin):
-    username = models.CharField(max_length=100, blank=False, unique=True)
+    username = models.CharField(max_length=100, blank=False, unique=True, validators=[validate_slug])
     login_date = models.DateTimeField(default=datetime.now)
     email = models.CharField(max_length=100, blank=False, unique=True)
     birthday = models.DateField(null=True,blank=True)

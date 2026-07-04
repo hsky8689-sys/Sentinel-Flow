@@ -91,6 +91,7 @@ def acces_profile(request,username):
     are_friends = False
     profile_picture = ''
     background_picture = ''
+    friendship_request = None
     try:
         friendship_request = UserRequest.objects.find_request(request.user, user).first()
         friendship = Friendship.objects.find_friendship(request.user,user).first()
@@ -120,6 +121,7 @@ def acces_profile(request,username):
         "sent_to_him": sent_to_him,
         "received_from_him": received_from_him,
         "friends": are_friends,
+        "friendship_request_id": friendship_request.id if friendship_request else None,
     }
     return render(request, "html/profile.html", context)
 @login_required
@@ -190,15 +192,16 @@ def api_delete_skill(request,skill_id):
 @csrf_protect
 @require_POST
 @ratelimit(key='user',rate='20/m',block=True)
-def api_send_friend_request(request,receiver):
+def api_friend_requests(request):
     try:
-        user = User.objects.get(id=receiver)
+        data = json.loads(request.body)
+        user = User.objects.get(id=data.get('receiver_id'))
         if user == request.user:
             return JsonResponse({'status': 'error', 'message': "Cannot send request to self"}, status=400)
         sent = UserRequest.objects.send_friend_request(request.user, user)
         if sent is None:
             return JsonResponse({'status': 'error', 'message': 'Request already exists or failed'}, status=400)
-        return JsonResponse({'status': 'succes', 'code': 200})
+        return JsonResponse({'status': 'succes', 'code': 200, 'id': sent.id})
     except User.DoesNotExist:
         return JsonResponse({'status': 'error', 'message': 'User not found'}, status=404)
     except Exception as e:
@@ -206,34 +209,40 @@ def api_send_friend_request(request,receiver):
         return JsonResponse({'status': 'error', 'message': 'Internal Server Error'}, status=500)
 @login_required
 @csrf_protect
-@require_POST
+@require_http_methods(["PATCH","DELETE"])
 @ratelimit(key='user',rate='20/m',block=True)
-def api_accept_friend_request(request,sender):
+def api_friend_request_detail(request,id):
     try:
-        user = User.objects.get(id=sender)
-        if user == request.user:
-            return JsonResponse({'status': 'error', 'message': "Cannot accept request from self"}, status=400)
-        friend_request = UserRequest.objects.find_request(user,request.user)
+        friend_request = UserRequest.objects.filter(id=id,request_type='friend').first()
         if friend_request is None:
-            return  JsonResponse({'status':'error','message':'No request received from certain user'},status=404)
-        if friend_request.first().status != 'pending':
-            return JsonResponse({'status': 'error', 'message': 'Request has already been handled'}, status=403)
-        sent = UserRequest.objects.accept_request(friend_request.first())
-        if sent is None:
-            return JsonResponse({'status': 'error', 'message': 'Request has not been sent'}, status=500)
-        UserRequest.objects.remove_request(friend_request.first())
-        if sent is None:
-            return JsonResponse({'status': 'error', 'message': 'Request already exists or failed'}, status=400)
-        return JsonResponse({'status': 'succes','message':'Request has been sent'},status=200)
-    except User.DoesNotExist:
-        return JsonResponse({'status': 'error', 'message': 'User not found'}, status=404)
+            return JsonResponse({'status': 'error', 'message': 'Request does not exist'}, status=404)
+        if request.user.id not in (friend_request.sender_id, friend_request.receiver_id):
+            return JsonResponse({'status': 'error', 'message': 'Not part of this request'}, status=403)
+        match request.method:
+            case "PATCH":
+                if friend_request.receiver_id != request.user.id:
+                    return JsonResponse({'status': 'error', 'message': 'Only the receiver can accept this request'}, status=403)
+                if friend_request.status != 'pending':
+                    return JsonResponse({'status': 'error', 'message': 'Request has already been handled'}, status=403)
+                data = json.loads(request.body or '{}')
+                if data.get('status') != 'accepted':
+                    return JsonResponse({'status': 'error', 'message': 'Unsupported status transition'}, status=400)
+                sent = UserRequest.objects.accept_request(friend_request)
+                if sent is None:
+                    return JsonResponse({'status': 'error', 'message': 'Request has not been sent'}, status=500)
+                UserRequest.objects.remove_request(friend_request)
+                return JsonResponse({'status': 'succes', 'message': 'Request accepted'}, status=200)
+            case "DELETE":
+                UserRequest.objects.remove_request(friend_request)
+                return JsonResponse({'status': 'succes', 'message': 'Request was removed'}, status=200)
     except Exception as e:
-        print(f"Eroare API: {str(e)}")
+        print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal Server Error'}, status=500)
 @login_required
 @csrf_protect
+@require_http_methods(["DELETE"])
 @transaction.atomic
-@ratelimit(key='user',rate='20/m',method='POST',block=True)
+@ratelimit(key='user',rate='20/m',block=True)
 def api_remove_friend(request,removed):
     try:
         removed = User.objects.get(id=removed)
@@ -249,23 +258,6 @@ def api_remove_friend(request,removed):
         if len(list(friendship_request))>0:
             UserRequest.objects.remove_request(friendship_request.first())
         return JsonResponse({'status': 'succes', 'message': 'Friendship was removed'}, status=200)
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal Server Error'}, status=500)
-@login_required
-@csrf_protect
-@require_POST
-@ratelimit(key='user',rate='20/m',block=True)
-def api_cancel_request(request,id):
-    try:
-        user = User.objects.get(id=id)
-        if user is None:
-            return JsonResponse({'status': 'error', 'message': 'User does not exist'}, status=404)
-        request = UserRequest.objects.find_request(request.user,user)
-        if request is None:
-            return JsonResponse({'status': 'error', 'message': 'Request does not exist'}, status=404)
-        UserRequest.objects.remove_request(request)
-        return JsonResponse({'status': 'succes', 'message': 'Request was removed'}, status=200)
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal Server Error'}, status=500)

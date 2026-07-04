@@ -41,26 +41,23 @@ async function handleProjectJoinRequest(senderId, receiverId, action, projectId)
     }
 }
 
-async function handleFriendRequest(senderId, receiverId, action) {
+async function handleFriendRequest(requestId, action) {
     if (!action) return;
 
     try {
-        const response = await fetch(`/api/requests/friend/handle/`, {
-            method: 'POST',
+        const isAccept = action === 'accept';
+        const response = await fetch(`/users/friend-requests/${requestId}/`, {
+            method: isAccept ? 'PATCH' : 'DELETE',
             headers: {
                 'Content-Type': 'application/json',
                 'X-CSRFToken': getCookie('csrftoken')
             },
-            body: JSON.stringify({
-                'sender_id': senderId,
-                'receiver_id': receiverId,
-                'action': action
-            })
+            body: isAccept ? JSON.stringify({status: 'accepted'}) : null
         });
         const data = await response.json();
 
-        if (data.status === 'success') {
-            document.getElementById(`req-friend-${senderId}-${receiverId}`).remove();
+        if (data.status === 'succes' || data.status === 'success') {
+            document.getElementById(`req-friend-${requestId}`).remove();
         } else {
             alert(data.message);
         }
