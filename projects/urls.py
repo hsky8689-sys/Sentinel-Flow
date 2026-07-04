@@ -6,7 +6,8 @@ from projects.views import open_project_page, open_project_members_page, open_pr
     api_add_project_task, api_remove_project_tasks, api_get_project_roles, \
     github_proxy_view, proxy_run_code, push_files, api_add_project_role, api_assign_users_to_role, \
     api_get_availible_languages, api_request_project_join, api_handle_project_join_request, request_file_open, \
-    api_handle_file_access_request, api_request_file_share, api_handle_request_file_share
+    api_handle_file_access_request, api_request_file_share, api_handle_request_file_share, \
+    api_github_get_all_repo_branches,api_github_handle_branch_action
 
 app_name = 'projects'
 
@@ -28,6 +29,8 @@ urlpatterns = [
     path("settings/<str:name>/api-add-task",api_add_project_task,name="add-project-task"),
     path("settings/<str:name>/api-remove-tasks",api_remove_project_tasks,name="remove-project-tasks"),
     path("settings/<str:name>/api-get-roles",api_get_project_roles,name="remove-project-tasks"),
+    path('api/github/branches',api_github_get_all_repo_branches,name='get-all-repo-branches'),
+    path('api/github/<str:project>/<str:repo>/branches',api_github_handle_branch_action,name='add-branch-on-github-repo'),
     path('api/github/<str:owner>/<str:repo>/',github_proxy_view,name='github-fetch-structure'),
     path('api/github/<str:owner>/<str:repo>/<path:path>',github_proxy_view,name='github-fetch-path'),
     path('api/run-code/',proxy_run_code,name='run-code'),

@@ -1,6 +1,9 @@
 const repoCache = {}
 let activeFileDOMElement = null;
+let currentBranch = null;
 document.addEventListener('DOMContentLoaded', () => {
+    const branchSelect = document.getElementById('branch-select');
+    if(branchSelect) currentBranch = branchSelect.value;
     const data = loadDirectory();
     window.localStorage.setItem("dirtyFiles",JSON.stringify([]));
     window.localStorage.setItem("commitMessage","");
@@ -24,7 +27,7 @@ async function loadDirectory(path = ""){
         return;
     }
     try{
-        const desiredUrl = `/projects/api/github/${window.djangoContext.project.owner_username}/${window.djangoContext.project.repo_name}/${path}`;
+        const desiredUrl = `/projects/api/github/${window.djangoContext.project.owner_username}/${window.djangoContext.project.repo_name}/${path}?branch=${encodeURIComponent(currentBranch || '')}`;
         const response = await fetch(desiredUrl);
         const data = await response.json();
         repoCache[path] = data;
@@ -34,6 +37,14 @@ async function loadDirectory(path = ""){
         console.error("Eroare la fetch:",error);
         return "";
     }
+}
+function onBranchChange(newBranch){
+    currentBranch = newBranch;
+    Object.keys(repoCache).forEach(key => delete repoCache[key]);
+    activeFileDOMElement = null;
+    renderCode('');
+    updateActionButtonsVisibility(null);
+    loadDirectory('');
 }
 function renderExplorer(items,currentPath){
         const container = document.getElementById("project-structure");
@@ -91,7 +102,7 @@ async function displayFileContent(path){
         requestFileWriteAccess(path);
         return;
     }
-    const desiredUrl = `/projects/api/github/${window.djangoContext.project.owner_username}/${window.djangoContext.project.repo_name}/${path}`;
+    const desiredUrl = `/projects/api/github/${window.djangoContext.project.owner_username}/${window.djangoContext.project.repo_name}/${path}?branch=${encodeURIComponent(currentBranch || '')}`;
     try{
         const response = await fetch(desiredUrl);
         if(response.status === 403){
@@ -191,7 +202,7 @@ async function pushModified(){
                             'files':dirtyFiles,
                             'repo':window.djangoContext.project.repo_name,
                             'owner':window.djangoContext.project.owner_username,
-                            'branch':'main',
+                            'branch':currentBranch,
                             'project':window.djangoContext.project.id,
                             'message':window.localStorage.getItem("commitMessage")
                             })

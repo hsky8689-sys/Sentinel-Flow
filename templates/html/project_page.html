@@ -22,6 +22,13 @@
             <br>
             <h2>{{stats.description}}</h2>
             <hr>
+            {% if stats.branches %}
+            <select id="branch-select" onchange="onBranchChange(this.value)">
+                {% for branch in stats.branches %}
+                <option value="{{ branch }}">{{ branch }}</option>
+                {% endfor %}
+            </select>
+            {% endif %}
             <div id="project-structure">
                 <h1>Loading files...</h1>
             </div>

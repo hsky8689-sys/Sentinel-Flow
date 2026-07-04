@@ -2,6 +2,7 @@ import ast
 import base64
 import json
 import re
+from datetime import datetime
 
 import django.db
 import requests
@@ -13,7 +14,7 @@ from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt, csrf_protect
-from django.views.decorators.http import require_http_methods, require_POST
+from django.views.decorators.http import require_http_methods, require_POST, require_GET
 from django_ratelimit.decorators import ratelimit
 
 import users.views
@@ -61,9 +62,12 @@ def open_project_page(request,name):
     visitor_permissions = UserProjectRole.objects.get_role_permissions(user_role,project)
     project_domains = ProjectDomain.objects.get_project_domains(project)
     owner_username,repo_name='no_github_owner_set','no_github_name_set'
+    branches = []
     if project.root_link:
         root_link = project.root_link.split('/')
         owner_username,repo_name = root_link[3],root_link[4]
+        if owner_username is not None and repo_name is not None:
+            branches= get_all_github_repo_branches(owner_username,repo_name)
     file_permissions = get_user_file_permissions(request.user,project)
     context_data = {
         'role': user_role,
@@ -75,6 +79,7 @@ def open_project_page(request,name):
         'repo_name':repo_name,
         'repository_link' : project.root_link,
         'staff': staff,
+        'branches':branches,
         'roles': list(staff.keys()),
         'domains':list(project_domains),
         'description':project.description,
@@ -494,13 +499,13 @@ def filter_tree_by_path(request,tree, current_path):
     return result
 
 @login_required
-def handle_file_content(request,owner, repo, path):
-    cache_key = f"github_file_{owner}_{repo}_{path.replace('/', '_')}"
+def handle_file_content(request,owner, repo, path, branch='main'):
+    cache_key = f"github_file_{owner}_{repo}_{branch}_{path.replace('/', '_')}"
     cached_file = cache.get(cache_key)
     if cached_file:
         return JsonResponse(cached_file, safe=False)
 
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={branch}"
     headers = {"Accept": "application/vnd.github.v3+json"}
     if hasattr(settings, 'GITHUB_TOKEN'):
         headers["Authorization"] = f"token {settings.GITHUB_TOKEN}"
@@ -531,10 +536,10 @@ def invalidate_repo_cache(repo:str,owner:str):
 @login_required
 def github_proxy_view(request, owner, repo, path=""):
     #invalidate_repo_cache(repo,owner)
+    branch = request.GET.get('branch') or "main"
     if path != "" and '.' in path.split('/')[-1]:
-        return handle_file_content(request,owner, repo, path)
+        return handle_file_content(request,owner, repo, path, branch)
 
-    branch = "main"#de schimbat...
     cache_key = f"github_tree_recursive_{owner}_{repo}_{branch}"
 
     cached_tree = cache.get(cache_key)
@@ -549,6 +554,8 @@ def github_proxy_view(request, owner, repo, path=""):
     response = requests.get(url, headers=headers)
 
     if response.status_code == 404 and branch == "main":
+        branch = "master"
+        cache_key = f"github_tree_recursive_{owner}_{repo}_{branch}"
         url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/master?recursive=1"
         response = requests.get(url, headers=headers)
 
@@ -735,6 +742,90 @@ def api_get_availible_languages(request):
             return JsonResponse({'status': 'success', 'languages': languages, 'source': 'api'}, status=200)
     except Exception as e:
         return JsonResponse({'status':'error','message':str(e)},status=500)
+def is_repo_private(owner,repo):
+    try:
+        token = settings.GITHUB_TOKEN
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json"
+        }
+        url = f"https://api.github.com/repos/{owner}/{repo}"
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            return data['visibility'] == 'private'
+    except Exception as e:
+        print(str(e))
+def get_default_branch(owner,repo):
+    try:
+        headers = {
+            "Authorization": f"token {settings.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+        url = f"https://api.github.com/repos/{owner}/{repo}"
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json().get('default_branch')
+        return None
+    except Exception as e:
+        print(str(e))
+        return None
+def get_branch_sha(owner,repo,branch_name):
+    try:
+        headers = {
+            "Authorization": f"token {settings.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+        url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch_name}"
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()['object']['sha']
+        return None
+    except Exception as e:
+        print(str(e))
+        return None
+def get_all_github_repo_branches(owner,repo):
+    try:
+        with transaction.atomic():
+            url = f'https://api.github.com/repos/{owner}/{repo}/branches'
+            #https://repos/AxonsoftApplicationRaduBlendea/hsky8689-sys
+            headers = {"Authorization": f"token {settings.GITHUB_TOKEN}"}
+            meta_res = requests.get(url, headers=headers) if is_repo_private(owner,repo) else requests.get(url)
+            if meta_res.ok:
+                branches_json = meta_res.json()
+                branches = [br['name'] for br in branches_json]
+                return branches
+            else:
+                return []
+    except Exception as e:
+        print(str(e))
+        return []
+@login_required
+@require_GET
+def api_github_get_all_repo_branches(request):
+    try:
+        data = request.GET
+        repo_url = data.get('repo')
+        project_name = data.get('project')
+        if not all([repo_url,project_name]):
+            return JsonResponse({'status':'bad request',
+                                      'message':'wrong repo url or project name provided'},
+                                       status=403)
+        project = get_object_or_404(Project, name=project_name)
+        owner,repo = get_project_owner_repo(project)
+        if not all([owner,repo]):
+            return JsonResponse({'status':'bad request',
+                                      'message':'wrong url privided'},
+                                       status=403)
+        received = get_all_github_repo_branches(owner,repo)
+        response_good = received is not None and len(received) > 0
+        return JsonResponse({'status': 'success' if response_good else 'error',
+                                 'message': 'Branches fully received' if response_good else 'Could not receive branches',
+                                 'branches': received},
+                                status=200 if response_good else 500)
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
 @login_required
 @require_http_methods(["POST"])
 def push_files(request):
@@ -1226,3 +1317,97 @@ def api_handle_request_file_share(request):
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
+
+def add_new_branch_to_repo(project,new_branch_name=None):
+    try:
+        owner,repo = get_project_owner_repo(project)
+        if not all([owner,repo]):
+            return JsonResponse({'status': 'bad request',
+                                      'message': 'Internal server error'}, status=403)
+        new_sync_branch = new_branch_name
+        if new_branch_name is None:
+            now = str(datetime.now()).replace(' ', '__').replace(':', '-').replace('.', '')
+            new_sync_branch = f'Branch_created_w_Sentinel_Flow_at_{now}' if new_branch_name is None else new_branch_name
+        default_branch_name = get_default_branch(owner,repo)
+        master_branch_sha = get_branch_sha(owner,repo,default_branch_name)
+        headers = {
+            "Authorization": f"token {settings.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+        data = {
+            "ref": f'refs/heads/{new_sync_branch}',
+            "sha": master_branch_sha
+        }
+        url = f"https://api.github.com/repos/{owner}/{repo}/git/refs"
+        response = requests.post(url,headers=headers,json=data)
+        if response.status_code != 201:
+            return JsonResponse({'status': 'bad request','message':response.json()},status=402)
+        return JsonResponse({'status':'success',
+                             'messaage':f'Succesfully added branch {new_sync_branch}'})
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error','message': 'Internal server error'},status=500)
+def modify_branch_from_repo(project,data):
+    try:
+        old_name = data.get('branch_name')
+        new_name = data.get('new_name')
+        if not old_name or not new_name:
+            return JsonResponse({'status':'bad request','message':'branch_name and new_name are required'},status=400)
+        owner,repo = get_project_owner_repo(project)
+        if not all([owner,repo]):
+            return JsonResponse({'status': 'bad request','message': 'Internal server error'}, status=403)
+        headers = {
+            "Authorization": f"token {settings.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+        url = f"https://api.github.com/repos/{owner}/{repo}/branches/{old_name}/rename"
+        response = requests.post(url,headers=headers,json={"new_name":new_name})
+        if response.status_code != 201:
+            return JsonResponse({'status':'bad request','message':response.json()},status=402)
+        return JsonResponse({'status':'success','message':f'Branch {old_name} renamed to {new_name}'})
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
+def delete_branch_from_repo(project,data):
+    try:
+        branch_name = data.get('branch_name')
+        if not branch_name:
+            return JsonResponse({'status':'bad request','message':'branch_name is required'},status=400)
+        owner,repo = get_project_owner_repo(project)
+        if not all([owner,repo]):
+            return JsonResponse({'status': 'bad request','message': 'Internal server error'}, status=403)
+        default_branch_name = get_default_branch(owner,repo)
+        if branch_name == default_branch_name:
+            return JsonResponse({'status':'bad request','message':'Cannot delete the default branch'},status=400)
+        headers = {
+            "Authorization": f"token {settings.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+        url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch_name}"
+        response = requests.delete(url,headers=headers)
+        if response.status_code != 204:
+            return JsonResponse({'status':'bad request','message':response.json() if response.content else 'Could not delete branch'},status=402)
+        return JsonResponse({'status':'success','message':f'Branch {branch_name} deleted'})
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
+#@login_required
+@require_http_methods(["POST","PUT","DELETE"])
+def api_github_handle_branch_action(request,project,repo):
+    method = request.method
+    project = get_object_or_404(Project,name=project)
+    user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+    visitor_permissions = UserProjectRole.objects.get_role_permissions(user_role, project)
+    if not visitor_permissions['can_modify_files']:
+        return JsonResponse({'status':'Unauthorized access'},status=403)
+    match method:
+        case "POST":
+            return add_new_branch_to_repo(project)
+        case "PUT":
+            data = json.loads(request.body)
+            return modify_branch_from_repo(project,data)
+        case "DELETE":
+            data = json.loads(request.body)
+            return delete_branch_from_repo(project,data)
+        case _:
+            return JsonResponse({'status':'bad request'},status=400)
