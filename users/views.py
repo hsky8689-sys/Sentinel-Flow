@@ -156,7 +156,10 @@ def create_project(request):
         name = request.POST['name']
         description = request.POST['description']
         user_id = request.user.id
-        Project.objects.create_project(user_id,name, description)
+        project = Project.objects.create_project(user_id,name, description)
+        if project is None:
+            messages.error(request, 'Numele de proiect este deja folosit sau invalid (doar litere, cifre, "-" și "_").')
+            return render(request,'html/create_project.html',{"user_id":request.user.id})
         return acces_profile(request,request.user.username)
 @login_required
 @csrf_protect

@@ -107,45 +107,32 @@ def open_project_settings(request, name):
         'user_username': request.user.username,
     }
     return render(request, 'html/project_settings_page.html', {'stats': context_data})
-@login_required
-@csrf_protect
-@require_GET
-@ratelimit(key='user',rate='120/m',block=True)
-def api_get_project_domains(request,name):
+def _get_project_domains(request,id):
     try:
-        project = get_object_or_404(Project,name=name)
+        project = get_object_or_404(Project,id=id)
         domains = ProjectDomain.objects.filter(project_id=project.id)
         return JsonResponse({'status':'success','domains':list(domains.values())})
     except django.db.DatabaseError:
         return JsonResponse({'status': 'error', 'code': 500})
-@login_required
-@csrf_protect
-@require_POST
-@ratelimit(key='user',rate='30/m',block=True)
-def api_add_project_domains(request,name):
+def _add_project_domains(request,id):
     try:
-        if request.method == 'POST':
-            project = get_object_or_404(Project,name=name)
-            role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
-            if UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
-                data = json.loads(request.body)
-                domains = data.get('newDomains',[])
-                succes = ProjectDomain.objects.add_domains_to_project(project,domains)
-                return JsonResponse({'status':'succes' if len(succes) == len(domains) else 'error',
-                             'code':200 if len(succes) == len(domains) else 404
-                })
-            else:
-                return JsonResponse({'status':'Unauthorized access','code':403})
+        project = get_object_or_404(Project,id=id)
+        role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
+        if UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
+            data = json.loads(request.body)
+            domains = data.get('newDomains',[])
+            succes = ProjectDomain.objects.add_domains_to_project(project,domains)
+            return JsonResponse({'status':'succes' if len(succes) == len(domains) else 'error',
+                         'code':200 if len(succes) == len(domains) else 404
+            })
+        else:
+            return JsonResponse({'status':'Unauthorized access','code':403})
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
-@login_required
-@csrf_protect
-@require_POST
-@ratelimit(key='user',rate='30/m',block=True)
-def api_delete_project_domains(request,name):
+def _delete_project_domains(request,id):
     try:
-            project = get_object_or_404(Project, name=name)
+            project = get_object_or_404(Project, id=id)
             role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
             if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
                 data = json.loads(request.body)
@@ -164,24 +151,30 @@ def api_delete_project_domains(request,name):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 @login_required
 @csrf_protect
-@require_GET
-@ratelimit(key='user',rate='120/m',block=True)
-def api_get_project_requirements(request,name):
+@require_http_methods(["GET","POST","DELETE"])
+@ratelimit(key='user',rate='120/m',method='GET',block=True)
+@ratelimit(key='user',rate='30/m',method='POST',block=True)
+@ratelimit(key='user',rate='30/m',method='DELETE',block=True)
+def api_project_domains(request,id):
+    match request.method:
+        case "GET":
+            return _get_project_domains(request,id)
+        case "POST":
+            return _add_project_domains(request,id)
+        case "DELETE":
+            return _delete_project_domains(request,id)
+def _get_project_requirements(request,id):
     try:
-        project = get_object_or_404(Project,name=name)
+        project = get_object_or_404(Project,id=id)
         succes = ProjectSkillRequirement.objects.get_requirements_grouped_by_sections(project)
         return JsonResponse({'status':'succes','requirements':succes})
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
-@login_required
-@csrf_protect
-@require_POST
-@ratelimit(key='user',rate='30/m',block=True)
-def api_add_project_requirements(request,name):
+def _add_project_requirements(request,id):
     try:
         with transaction.atomic():
-            project = get_object_or_404(Project, name=name)
+            project = get_object_or_404(Project, id=id)
             role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
             if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
                 data = json.loads(request.body)
@@ -208,14 +201,10 @@ def api_add_project_requirements(request,name):
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
-@login_required
-@csrf_protect
-@require_POST
-@ratelimit(key='user',rate='30/m',block=True)
-def api_remove_project_requirements(request,name):
+def _remove_project_requirements(request,id):
     try:
         with transaction.atomic():
-            project = get_object_or_404(Project, name=name)
+            project = get_object_or_404(Project, id=id)
             role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
             if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
                 data = json.loads(request.body)
@@ -243,11 +232,21 @@ def api_remove_project_requirements(request,name):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 @login_required
 @csrf_protect
-@require_POST
-@ratelimit(key='user',rate='30/m',block=True)
-def api_remove_project_sections(request,name):
+@require_http_methods(["GET","POST","DELETE"])
+@ratelimit(key='user',rate='120/m',method='GET',block=True)
+@ratelimit(key='user',rate='30/m',method='POST',block=True)
+@ratelimit(key='user',rate='30/m',method='DELETE',block=True)
+def api_project_requirements(request,id):
+    match request.method:
+        case "GET":
+            return _get_project_requirements(request,id)
+        case "POST":
+            return _add_project_requirements(request,id)
+        case "DELETE":
+            return _remove_project_requirements(request,id)
+def _remove_project_sections(request,id):
     try:
-        project = get_object_or_404(Project, name=name)
+        project = get_object_or_404(Project, id=id)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             data = json.loads(request.body)
@@ -263,13 +262,9 @@ def api_remove_project_sections(request,name):
             return JsonResponse({'status': 'Unauthorized access'},status=403)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
-@login_required
-@csrf_protect
-@require_POST
-@ratelimit(key='user',rate='30/m',block=True)
-def api_add_project_sections(request,name):
+def _add_project_sections(request,id):
     try:
-        project = get_object_or_404(Project, name=name)
+        project = get_object_or_404(Project, id=id)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             data = json.loads(request.body)
@@ -287,11 +282,18 @@ def api_add_project_sections(request,name):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 @login_required
 @csrf_protect
-@require_GET
-@ratelimit(key='user',rate='120/m',block=True)
-def api_get_project_tasks(request,name):
+@require_http_methods(["POST","DELETE"])
+@ratelimit(key='user',rate='30/m',method='POST',block=True)
+@ratelimit(key='user',rate='30/m',method='DELETE',block=True)
+def api_project_requirement_sections(request,id):
+    match request.method:
+        case "POST":
+            return _add_project_sections(request,id)
+        case "DELETE":
+            return _remove_project_sections(request,id)
+def _get_project_tasks(request,id):
     try:
-        project = get_object_or_404(Project, name=name)
+        project = get_object_or_404(Project, id=id)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             tasks = list(ProjectTask.objects.get_project_tasks(project).values())
@@ -387,14 +389,10 @@ def get_project_tree_paths(project, branch='main'):
     cache.set(cache_key, formatted_tree, timeout=3600)
     return {item['path'] for item in formatted_tree}
 
-@login_required
-@csrf_exempt
-@require_POST
-@ratelimit(key='user', rate='30/m', block=True)
-def api_add_project_task(request,name):
+def _add_project_task(request,id):
     try:
         data = json.loads(request.body)
-        project = Project.objects.get(name=name)
+        project = Project.objects.get(id=id)
         if project is None:
             return JsonResponse({'status':'Error','message':'Project does not exist'},status=404)
         title = data.get('title')
@@ -432,13 +430,9 @@ def api_add_project_task(request,name):
     except Exception as e:
         print(str(e))
         return JsonResponse({'status':'error','message':'Internal server error'},status=500)
-@login_required
-@csrf_protect
-@require_http_methods(["DELETE"])
-@ratelimit(key='user', rate='30/m', block=True)
-def api_remove_project_tasks(request,name):
+def _remove_project_tasks(request,id):
     try:
-        project = Project.objects.get(name=name)
+        project = Project.objects.get(id=id)
         if project is None:
             return JsonResponse({'status':'Error','message':'Project does not exist'},status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
@@ -457,14 +451,24 @@ def api_remove_project_tasks(request,name):
             return JsonResponse({'status': 'Unauthorized access'},status=403)
     except Exception as e:
         return JsonResponse({'status':'error','message':'Internal server error'},status=500)
-
 @login_required
 @csrf_protect
-@require_GET
-@ratelimit(key='user', rate='120/m', block=True)
-def api_get_project_roles(request, name):
+@require_http_methods(["GET","POST","DELETE"])
+@ratelimit(key='user',rate='120/m',method='GET',block=True)
+@ratelimit(key='user',rate='30/m',method='POST',block=True)
+@ratelimit(key='user',rate='30/m',method='DELETE',block=True)
+def api_project_tasks(request,id):
+    match request.method:
+        case "GET":
+            return _get_project_tasks(request,id)
+        case "POST":
+            return _add_project_task(request,id)
+        case "DELETE":
+            return _remove_project_tasks(request,id)
+
+def _get_project_roles(request, id):
     try:
-        project = Project.objects.get(name=name)
+        project = Project.objects.get(id=id)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
 
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
@@ -911,13 +915,9 @@ def push_files(request):
         print(str(e))
         return JsonResponse({'error':str(e)},status=500)
 
-@login_required
-@csrf_protect
-@require_POST
-@ratelimit(key='user',rate='20/m',block=True)
-def api_add_project_role(request, project_id):
+def _add_project_role(request, id):
     try:
-        project = get_object_or_404(Project, id=project_id)
+        project = get_object_or_404(Project, id=id)
         user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(user_role, project)['can_change_project_settings']:
             data = json.loads(request.body)
@@ -933,7 +933,6 @@ def api_add_project_role(request, project_id):
             if can_accept_invites and can_invite_others and can_kick_others and can_change_roles and can_start_calls and can_add_tasks and can_modify_tasks and can_delete_tasks and can_change_project_settings:
                 return JsonResponse({'error':'Cannot recreate the owner role'},status=403)
             new_role = ProjectRole.objects.create(
-                project=project,
                 name=data.get('name'),
                 can_accept_invites=can_accept_invites,
                 can_invite_others=can_invite_others,
@@ -952,6 +951,18 @@ def api_add_project_role(request, project_id):
     except Exception as e:
         print(f"Eroare in api_add_project_role: {str(e)}")
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
+@login_required
+@csrf_protect
+@require_http_methods(["GET","POST"])
+@ratelimit(key='user',rate='120/m',method='GET',block=True)
+@ratelimit(key='user',rate='20/m',method='POST',block=True)
+def api_project_roles(request, id):
+    match request.method:
+        case "GET":
+            return _get_project_roles(request, id)
+        case "POST":
+            return _add_project_role(request, id)
 
 @login_required
 @csrf_protect
@@ -1419,9 +1430,9 @@ def delete_branch_from_repo(project,data):
 @csrf_protect
 @require_http_methods(["POST","PUT","DELETE"])
 @ratelimit(key='user',rate='15/m',block=True)
-def api_github_handle_branch_action(request,project,repo):
+def api_github_handle_branch_action(request,id):
     method = request.method
-    project = get_object_or_404(Project,name=project)
+    project = get_object_or_404(Project,id=id)
     user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
     visitor_permissions = UserProjectRole.objects.get_role_permissions(user_role, project)
     if not visitor_permissions['can_modify_files']:

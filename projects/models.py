@@ -3,6 +3,8 @@ from collections import defaultdict
 from datetime import datetime
 
 import django.db
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_slug
 from django.db import models, transaction
 from django.db.models import QuerySet
 
@@ -25,13 +27,21 @@ class ProjectManager(models.Manager):
         :param user: The future project creator and owner
         :return:
         """
-        with transaction.atomic():
-            proj = self.create(owner_id=user, name=name, description=description)
-            default_roles = ProjectRole.objects.create_default_project_roles(proj)
-            if not UserProjectRole.objects.give_role(proj.owner, proj, default_roles[0][0].id):
-                transaction.set_rollback(True)
-                return None
-        return proj
+        try:
+            validate_slug(name)
+        except ValidationError:
+            return None
+        try:
+            with transaction.atomic():
+                proj = self.create(owner_id=user, name=name, description=description)
+                default_roles = ProjectRole.objects.create_default_project_roles(proj)
+                if not UserProjectRole.objects.give_role(proj.owner, proj, default_roles[0][0].id):
+                    transaction.set_rollback(True)
+                    return None
+            return proj
+        except django.db.DatabaseError as e:
+            print(str(e))
+            return None
 
     def delete_project(self, project):
         """
@@ -57,7 +67,7 @@ class ProjectManager(models.Manager):
 
 class Project(models.Model):
     owner = models.ForeignKey(User, on_delete=models.CASCADE)
-    name = models.CharField(max_length=100, blank=False, null=False, default='New project')
+    name = models.CharField(max_length=100, blank=False, null=False, default='New project', unique=True, validators=[validate_slug])
     description = models.CharField(max_length=5000, blank=False, null=False, default='Project description')
     root_link = models.CharField(max_length=1000,blank=False,null=False,default='root_github')
     objects = ProjectManager()

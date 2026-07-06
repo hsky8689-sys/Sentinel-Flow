@@ -354,14 +354,15 @@ class RequestManager(models.Manager):
 
     def send_files_access_request(self,user,project,requested_access,valid_admins):
         try:
-            return self.bulk_create(
-                [UserRequest(sender_id=user.id,
-                             request_type='file_access',
-                             status='pending',
-                             receiver_id=admin.id,
-                             target='Requesting acces for files {} in project {}'.format(requested_access,project.name),
-                             ) for admin in valid_admins]
-            )
+            with transaction.atomic():
+                return self.bulk_create(
+                    [UserRequest(sender_id=user.id,
+                                 request_type='file_access',
+                                 status='pending',
+                                 receiver_id=admin.id,
+                                 target='Requesting acces for files {} in project {}'.format(requested_access,project.name),
+                                 ) for admin in valid_admins]
+                )
         except django.db.DatabaseError as e:
             print(str(e))
 

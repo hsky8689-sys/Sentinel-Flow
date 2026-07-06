@@ -9,7 +9,7 @@ async function loadProjectStatsSection(){
                 <label htmlFor="project-description">Project description</label><input id="project-desctiption" name="project-description" type="text"/><br>
                 <label for="is-private">Is project private(can be accessed via invite only and is hidden to the search engine)</label><input id="is-private" name="privacy" type="checkbox"/><br>
                 <h1>Project domains</h1>`;
-                try{  const apiUrl = '/projects/settings/'+djangoContext.project.name+'/api-project-domains';
+                try{  const apiUrl = '/projects/settings/'+djangoContext.project.id+'/domains/';
                   const domain_tags =
                     await fetch(apiUrl, {headers: { 'X-Requested-With': 'XMLHttpRequest' }
                   });
@@ -40,7 +40,7 @@ async function loadProjectStatsSection(){
             content +=  `</div>`;
             content += `<h1>Project techstack requirements</h1>`;
             try{
-                const desiredUrl = `/projects/settings/${window.djangoContext.project.name}/api-get-project-requirements`;
+                const desiredUrl = `/projects/settings/${window.djangoContext.project.id}/requirements/`;
                 const response = await fetch(desiredUrl,
                 {headers: { 'X-Requested-With': 'XMLHttpRequest'}
                 });
@@ -90,7 +90,7 @@ async function loadTaskAdministrationSection(){
     area.innerHTML = '';
     let newHtml = '';
     try{
-        const desiredUrl = `/projects/settings/${djangoContext.project.name}/api-get-project-tasks`;
+        const desiredUrl = `/projects/settings/${djangoContext.project.id}/tasks/`;
         const response = await fetch(desiredUrl,
             {
                     method: 'GET',
@@ -147,7 +147,7 @@ async function loadTaskAdministrationSection(){
 }
 async function buildProjectMembersOptions(){
     try{
-        const url = `/projects/settings/${djangoContext.project.name}/api-get-roles`;
+        const url = `/projects/settings/${djangoContext.project.id}/roles/`;
         const response = await fetch(url, {
             headers: {
                 'Content-Type': 'application/json',
@@ -182,7 +182,7 @@ async function buildProjectResourceOptions(){
 }
 async function removeTasks(){
     try{
-        const desiredUrl = `/projects/settings/${window.djangoContext.project.name}/api-remove-tasks`;
+        const desiredUrl = `/projects/settings/${window.djangoContext.project.id}/tasks/`;
         const removed = JSON.parse(localStorage.getItem('removedTasks') || '[]');
         const response = await fetch(desiredUrl,
             {
@@ -242,7 +242,7 @@ async function addTask(){
         resource_paths: selectedResources,
      };
      try{
-        const desiredUrl = `/projects/settings/${djangoContext.project.name}/api-add-task`;
+        const desiredUrl = `/projects/settings/${djangoContext.project.id}/tasks/`;
         const response = await fetch(desiredUrl, {
             method: 'POST',
             headers: {
@@ -361,7 +361,7 @@ async function addSectionsToDb(){
     const removedSections = JSON.parse(localStorage.getItem('removedSections') || '[]');
     if(newSections.length>0){
         try{
-            const desiredUrl = `/projects/settings/${window.djangoContext.project.name}/api-add-requirement-sections`;
+            const desiredUrl = `/projects/settings/${window.djangoContext.project.id}/requirement-sections/`;
             const response = await fetch(desiredUrl,{
                 method: 'POST',
                 headers: {
@@ -378,9 +378,9 @@ async function addSectionsToDb(){
     }
     if(removedSections.length>0){
         try{
-            const desiredUrl = `/projects/settings/${window.djangoContext.project.name}/api-remove-requirement-sections`;
+            const desiredUrl = `/projects/settings/${window.djangoContext.project.id}/requirement-sections/`;
             const response = await fetch(desiredUrl,{
-                method: 'POST',
+                method: 'DELETE',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-CSRFToken': getCookie('csrftoken')
@@ -441,7 +441,7 @@ async function addRequirementsToDb(){
     const removedRequirements = JSON.parse(localStorage.getItem('removedRequirements') || '[]');
     if(newRequirements.length > 0){
         try{
-            const desiredUrl = `/projects/settings/${window.djangoContext.project.name}/api-add-requirements`;
+            const desiredUrl = `/projects/settings/${window.djangoContext.project.id}/requirements/`;
              const response = await fetch(desiredUrl, {
                 method: 'POST',
                 headers: {
@@ -458,9 +458,9 @@ async function addRequirementsToDb(){
     }
     if(removedRequirements.length > 0){
         try{
-            const desiredUrl = `/projects/settings/${window.djangoContext.project.name}/api-remove-requirements`;
+            const desiredUrl = `/projects/settings/${window.djangoContext.project.id}/requirements/`;
              const response = await fetch(desiredUrl, {
-                method: 'POST',
+                method: 'DELETE',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-CSRFToken': getCookie('csrftoken')
@@ -481,7 +481,7 @@ async function addDomainsToDb(){
     const removedDomains = JSON.parse(localStorage.getItem('removedDomains') || '[]');
     try {
         if (newDomains.length > 0) {
-            const desiredUrl = `/projects/settings/${window.djangoContext.project.name}/api-add-domains`;
+            const desiredUrl = `/projects/settings/${window.djangoContext.project.id}/domains/`;
             const addRes = await fetch(desiredUrl, {
                 method: 'POST',
                 headers: {
@@ -494,9 +494,9 @@ async function addDomainsToDb(){
         }
 
         if (removedDomains.length > 0) {
-            const desiredUrl = `/projects/settings/${window.djangoContext.project.name}/api-remove-domains`;
+            const desiredUrl = `/projects/settings/${window.djangoContext.project.id}/domains/`;
             const remRes = await fetch(desiredUrl, {
-                method: 'POST',
+                method: 'DELETE',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-CSRFToken': getCookie('csrftoken')
@@ -630,7 +630,7 @@ async function loadRolesSection() {
 // 3. FETCH ROLURI GET
 async function getProjectRoles() {
     try {
-        const response = await fetch(`/projects/settings/${window.djangoContext.project.name}/api-get-roles`, {
+        const response = await fetch(`/projects/settings/${window.djangoContext.project.id}/roles/`, {
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
 
@@ -660,7 +660,7 @@ async function createNewRole(event) {
     });
 
     try {
-        const response = await fetch(`/projects/settings/${window.djangoContext.project.id}/api-add-role`, {
+        const response = await fetch(`/projects/settings/${window.djangoContext.project.id}/roles/`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
