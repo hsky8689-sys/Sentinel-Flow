@@ -70,6 +70,7 @@ class Project(models.Model):
     name = models.CharField(max_length=100, blank=False, null=False, default='New project', unique=True, validators=[validate_slug])
     description = models.CharField(max_length=5000, blank=False, null=False, default='Project description')
     root_link = models.CharField(max_length=1000,blank=False,null=False,default='root_github')
+    can_only_modify_from_app = models.BooleanField(default=False)
     objects = ProjectManager()
 
     class Meta:
@@ -243,7 +244,9 @@ class ProjectRole(models.Model):
     can_invite_others = models.BooleanField(default=False)
     can_kick_others = models.BooleanField(default=False)
     can_change_roles = models.BooleanField(default=False)
-    can_start_calls = models.BooleanField(default=False)
+    can_create_branches = models.BooleanField(default=False)
+    can_merge_branches = models.BooleanField(default=False)
+    can_delete_branches = models.BooleanField(default=False)
     can_add_tasks = models.BooleanField(default=False)
     can_delete_tasks = models.BooleanField(default=False)
     can_modify_tasks = models.BooleanField(default=False)
@@ -299,7 +302,8 @@ class UserProjectRoleManager(models.Manager):
 
             permission_keys = [
                 'can_accept_invites', 'can_invite_others', 'can_kick_others',
-                'can_change_roles', 'can_start_calls', 'can_add_tasks',
+                'can_change_roles', 'can_create_branches', 'can_merge_branches',
+                'can_delete_branches', 'can_add_tasks',
                 'can_delete_tasks', 'can_modify_tasks', 'can_modify_files',
                 'can_execute_code', 'can_share_file_access', 'can_change_project_settings'
             ]
@@ -311,7 +315,8 @@ class UserProjectRoleManager(models.Manager):
             print(str(e))
             return {k: False for k in [
                 'can_accept_invites', 'can_invite_others', 'can_kick_others',
-                'can_change_roles', 'can_start_calls', 'can_add_tasks',
+                'can_change_roles', 'can_create_branches', 'can_merge_branches',
+                'can_delete_branches', 'can_add_tasks',
                 'can_delete_tasks', 'can_modify_tasks', 'can_modify_files',
                 'can_execute_code', 'can_share_file_access', 'can_change_project_settings'
             ]}

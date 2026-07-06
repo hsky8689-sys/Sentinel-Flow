@@ -925,12 +925,14 @@ def _add_project_role(request, id):
             can_invite_others = data.get('can_invite_others', False)
             can_kick_others = data.get('can_kick_others', False)
             can_change_roles = data.get('can_change_roles', False)
-            can_start_calls = data.get('can_start_calls', False)
+            can_create_branches = data.get('can_create_branches', False)
+            can_merge_branches = data.get('can_merge_branches', False)
+            can_delete_branches = data.get('can_delete_branches', False)
             can_add_tasks = data.get('can_add_tasks', False)
             can_delete_tasks = data.get('can_delete_tasks', False)
             can_modify_tasks = data.get('can_modify_tasks', False)
             can_change_project_settings = data.get('can_change_project_settings', False)
-            if can_accept_invites and can_invite_others and can_kick_others and can_change_roles and can_start_calls and can_add_tasks and can_modify_tasks and can_delete_tasks and can_change_project_settings:
+            if can_accept_invites and can_invite_others and can_kick_others and can_change_roles and can_create_branches and can_merge_branches and can_delete_branches and can_add_tasks and can_modify_tasks and can_delete_tasks and can_change_project_settings:
                 return JsonResponse({'error':'Cannot recreate the owner role'},status=403)
             new_role = ProjectRole.objects.create(
                 name=data.get('name'),
@@ -938,7 +940,9 @@ def _add_project_role(request, id):
                 can_invite_others=can_invite_others,
                 can_kick_others=can_kick_others,
                 can_change_roles=can_change_roles,
-                can_start_calls=can_start_calls,
+                can_create_branches=can_create_branches,
+                can_merge_branches=can_merge_branches,
+                can_delete_branches=can_delete_branches,
                 can_add_tasks=can_add_tasks,
                 can_delete_tasks=can_delete_tasks,
                 can_modify_tasks=can_modify_tasks,
@@ -1435,16 +1439,66 @@ def api_github_handle_branch_action(request,id):
     project = get_object_or_404(Project,id=id)
     user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
     visitor_permissions = UserProjectRole.objects.get_role_permissions(user_role, project)
-    if not visitor_permissions['can_modify_files']:
-        return JsonResponse({'status':'Unauthorized access'},status=403)
     match method:
         case "POST":
+            if not visitor_permissions['can_create_branches']:
+                return JsonResponse({'status': 'Unauthorized access'}, status=403)
             return add_new_branch_to_repo(project)
         case "PUT":
             data = json.loads(request.body)
+            if not visitor_permissions['can_modify_branches']:
+                return JsonResponse({'status': 'Unauthorized access'}, status=403)
             return modify_branch_from_repo(project,data)
         case "DELETE":
             data = json.loads(request.body)
+            if not visitor_permissions['can_delete_branches']:
+                return JsonResponse({'status': 'Unauthorized access'}, status=403)
             return delete_branch_from_repo(project,data)
         case _:
             return JsonResponse({'status':'bad request'},status=400)
+@login_required
+@csrf_protect
+@require_POST
+@ratelimit(key='user',rate='15/m',block=True)
+def api_merge_github_branches(request,id):
+    try:
+        project = get_object_or_404(Project,id=id)
+        owner,repo = get_project_owner_repo(project)
+        user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+        visitor_permissions = UserProjectRole.objects.get_role_permissions(user_role, project)
+        if not visitor_permissions['can_merge_branches']:
+            return JsonResponse({'status': 'Unauthorized access'}, status=403)
+        url = f'https://api.github.com/repos/{owner}/{repo}/merges'
+        headers = {
+            "Authorization": f"token {settings.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
+        data = json.loads(request.body)
+        base = data.get('base')
+        head = data.get('head')
+        if not all([base,head]):
+            return JsonResponse({
+                      'status': 'bad request',
+                      'message': 'No base or head branches were given to the request'
+            },status=403)
+        body = {
+          "base": base,
+          "head": head,
+          "commit_message": "Merge feature-branch into main"
+        }
+        response = requests.post(url,headers=headers,json=body)
+        response_code = response.status_code
+        match response_code:
+            case 201:
+                return JsonResponse({'status':'success','message':'Branches were successfully merged'},status=200)
+            case 204:
+                return JsonResponse({'status': 'bad request', 'message':'main branch already contains all info,nothing to merge'}, status=204)
+            case 404:
+                return JsonResponse({'status':'error','message':'repository not found'},status=404)
+            case 403:
+                return JsonResponse({'status':'bad request','message':'merge blocked by branch protection rules'},status=403)
+            case 409:
+                return JsonResponse({'status':'bad request','message':'branch conflict detected,could not push'},status=409)
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)

@@ -127,6 +127,10 @@ def acces_profile(request,username):
 @login_required
 def inbox_page(request):
     pass
+@require_http_methods(["POST","GET"])
+@ratelimit(key='ip',rate='10/m',method='POST',block=True)
+@ratelimit(key='post:username',rate='5/m',method='POST',block=True)
+@ratelimit(key='user_or_ip',rate='20/m',method='GET',block=True)
 def login_page(request):
     if request.method == "POST":
         if request.user.is_authenticated:
