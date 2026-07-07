@@ -22,6 +22,13 @@
             <br>
             <h2>{{stats.description}}</h2>
             <hr>
+            {% if stats.repos %}
+            <select id="repo-select" onchange="onRepoChange(this.value)">
+                {% for repo in stats.repos %}
+                <option value="{{ repo.id }}" data-owner="{{ repo.owner }}" data-repo="{{ repo.repo }}" {% if repo.id == stats.active_repo_id %}selected{% endif %}>{{ repo.name }}</option>
+                {% endfor %}
+            </select>
+            {% endif %}
             {% if stats.branches %}
             <select id="branch-select" onchange="onBranchChange(this.value)">
                 {% for branch in stats.branches %}

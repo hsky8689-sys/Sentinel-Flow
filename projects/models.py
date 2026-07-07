@@ -1,6 +1,7 @@
 from django.utils import timezone
 from collections import defaultdict
 from datetime import datetime
+import secrets
 
 import django.db
 from django.core.exceptions import ValidationError
@@ -9,6 +10,10 @@ from django.db import models, transaction
 from django.db.models import QuerySet
 
 from users.models import User
+
+
+def generate_app_signing_key():
+    return secrets.token_hex(32)
 
 
 class ProjectManager(models.Manager):
@@ -69,12 +74,35 @@ class Project(models.Model):
     owner = models.ForeignKey(User, on_delete=models.CASCADE)
     name = models.CharField(max_length=100, blank=False, null=False, default='New project', unique=True, validators=[validate_slug])
     description = models.CharField(max_length=5000, blank=False, null=False, default='Project description')
-    root_link = models.CharField(max_length=1000,blank=False,null=False,default='root_github')
     can_only_modify_from_app = models.BooleanField(default=False)
+    app_signing_key = models.CharField(max_length=64, unique=True, default=generate_app_signing_key)
+    repo_stats = models.ManyToManyField('ProjectRepoStats', related_name='projects', blank=True)
+    flagged_external_push = models.BooleanField(default=False)
     objects = ProjectManager()
 
     class Meta:
         db_table = 'projects'
+
+
+class ProjectRepoStatsManager(models.Manager):
+    def get_project_repos(self, project):
+        try:
+            return self.filter(projects=project)
+        except django.db.Error as e:
+            print(str(e))
+            return []
+
+
+class ProjectRepoStats(models.Model):
+    github_repo_name = models.CharField(max_length=255, blank=False, null=False)
+    github_repo_link = models.CharField(max_length=1000, blank=False, null=False)
+    github_token = models.CharField(max_length=255, blank=True, default='')
+    protected_branch = models.CharField(max_length=255, blank=True, default='')
+    previous_branch_protection = models.TextField(blank=True, default='')
+    objects = ProjectRepoStatsManager()
+
+    class Meta:
+        db_table = 'project_repo_stats'
 
 
 class ProjectDomainManager(models.Manager):

@@ -6,7 +6,8 @@ from projects.views import open_project_page, open_project_members_page, open_pr
     github_proxy_view, proxy_run_code, push_files, \
     api_get_availible_languages, api_request_project_join, api_handle_project_join_request, request_file_open, \
     api_handle_file_access_request, api_request_file_share, api_handle_request_file_share, \
-    api_github_get_all_repo_branches, api_github_handle_branch_action, api_merge_github_branches
+    api_github_get_all_repo_branches, api_github_handle_branch_action, api_merge_github_branches, webhook_github, \
+    api_handle_project_repositories
 
 app_name = 'projects'
 
@@ -32,7 +33,9 @@ urlpatterns = [
     path('api/requests/file-access/handle/',api_handle_file_access_request,name='handle-file-access-request'),
     path('api/requests/file-writers/',api_request_file_share,name='request-file-share'),
     path('api/requests/file-writers/handle',api_handle_request_file_share,name='handle-request-file-share'),
-    path('api/github/<int:id>/merges',api_merge_github_branches,name='merge-branches')
+    path('api/github/<int:id>/merges',api_merge_github_branches,name='merge-branches'),
+    path('api/github-webhook/',webhook_github,name='webhook-github'),
+    path('api/<int:id>/',api_handle_project_repositories,name='add-repo-to-project'),
 ]
 
 

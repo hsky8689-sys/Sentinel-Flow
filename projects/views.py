@@ -1,5 +1,7 @@
 import ast
 import base64
+import hashlib
+import hmac
 import json
 import re
 from datetime import datetime
@@ -19,7 +21,7 @@ from django_ratelimit.decorators import ratelimit
 
 from devnetwork import settings
 from projects.models import Project, UserProjectRole, ProjectDomain, ProjectSkillRequirement, ProjectRequirementSection, \
-    ProjectTask, ProjectRole, ResourceAccess, TaskResourceAccess, ProjectTaskParticipation
+    ProjectTask, ProjectRole, ResourceAccess, TaskResourceAccess, ProjectTaskParticipation, ProjectRepoStats
 from users.models import User, UserRequest
 
 
@@ -54,11 +56,25 @@ def open_project_page(request,name):
     project_domains = ProjectDomain.objects.get_project_domains(project)
     owner_username,repo_name='no_github_owner_set','no_github_name_set'
     branches = []
-    if project.root_link:
-        root_link = project.root_link.split('/')
-        owner_username,repo_name = root_link[3],root_link[4]
-        if owner_username is not None and repo_name is not None:
-            branches= get_all_github_repo_branches(owner_username,repo_name)
+    active_repo_id = None
+    repos_for_frontend = []
+    for stat in ProjectRepoStats.objects.get_project_repos(project):
+        stat_owner,stat_repo = get_project_owner_repo_from_link(stat.github_repo_link)
+        repos_for_frontend.append({
+            'id':stat.id,
+            'name':stat.github_repo_name,
+            'owner':stat_owner,
+            'repo':stat_repo
+        })
+    # "primul repo gasit de query-uri" - project.repo_stats.first() with no explicit
+    # ordering, so it's whatever the DB returns first (insertion order in practice)
+    active_repo = project.repo_stats.first()
+    if active_repo:
+        active_repo_id = active_repo.id
+        active_owner,active_repo_name = get_project_owner_repo_from_link(active_repo.github_repo_link)
+        if active_owner and active_repo_name:
+            owner_username,repo_name = active_owner,active_repo_name
+            branches = get_all_github_repo_branches(owner_username,repo_name)
     file_permissions = get_user_file_permissions(request.user,project)
     context_data = {
         'role': user_role,
@@ -68,7 +84,8 @@ def open_project_page(request,name):
         'project_id': project.id,
         'owner_github_name':owner_username,
         'repo_name':repo_name,
-        'repository_link' : project.root_link,
+        'repos':repos_for_frontend,
+        'active_repo_id':active_repo_id,
         'staff': staff,
         'branches':branches,
         'roles': list(staff.keys()),
@@ -163,6 +180,205 @@ def api_project_domains(request,id):
             return _add_project_domains(request,id)
         case "DELETE":
             return _delete_project_domains(request,id)
+def register_github_webhook(owner, repo, project, token):
+    """
+    TODO raw scaffold: registers a 'push' webhook on the given repo, signed with
+    the project's own app_signing_key (reused here as the webhook secret too).
+    """
+    try:
+        headers = {"Accept": "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"token {token}"
+        url = f"https://api.github.com/repos/{owner}/{repo}/hooks"
+        payload = {
+            "name": "web",
+            "active": True,
+            "events": ["push"],
+            "config": {
+                "url": settings.GITHUB_WEBHOOK_CALLBACK_URL,  # TODO: must be a public URL (ngrok in dev)
+                "content_type": "json",
+                "secret": project.app_signing_key,
+                "insecure_ssl": "0"
+            }
+        }
+        response = requests.post(url, headers=headers, json=payload)
+        return response.status_code == 201
+    except Exception as e:
+        print(str(e))
+        return False
+def get_github_username(token):
+    try:
+        headers = {"Accept": "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"token {token}"
+        response = requests.get("https://api.github.com/user", headers=headers)
+        if response.status_code == 200:
+            return response.json().get('login')
+        return None
+    except Exception as e:
+        print(str(e))
+        return None
+def apply_branch_protection(owner, repo, token, repo_stat):
+    """
+    TODO raw scaffold: restricts push access on the repo's default branch to
+    only the GitHub account behind `token`, saving whatever protection existed
+    before (if any) on `repo_stat` so it can be restored with revert_branch_protection.
+
+    Caveat: if `token` belongs to a personal account (not a dedicated bot/service
+    account), that same person can still push manually with their own git
+    credentials - this only blocks *other* collaborators, not the token's own owner.
+    """
+    try:
+        headers = {"Accept": "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"token {token}"
+        branch = get_default_branch(owner, repo)
+        if not branch:
+            return False
+        url = f"https://api.github.com/repos/{owner}/{repo}/branches/{branch}/protection"
+
+        existing = requests.get(url, headers=headers)
+        previous_protection = existing.json() if existing.status_code == 200 else None
+
+        app_username = get_github_username(token)
+        if not app_username:
+            return False
+
+        payload = {
+            "required_status_checks": None,
+            "enforce_admins": None,
+            "required_pull_request_reviews": None,
+            "restrictions": {
+                "users": [app_username],
+                "teams": [],
+                "apps": []
+            }
+        }
+        response = requests.put(url, headers=headers, json=payload)
+        if response.status_code not in (200, 201):
+            return False
+
+        repo_stat.protected_branch = branch
+        repo_stat.previous_branch_protection = json.dumps(previous_protection) if previous_protection else ''
+        repo_stat.save(update_fields=['protected_branch', 'previous_branch_protection'])
+        return True
+    except Exception as e:
+        print(str(e))
+        return False
+def revert_branch_protection(repo_stat):
+    """
+    TODO raw scaffold: undoes apply_branch_protection. If the branch had no
+    protection before we touched it, removes protection entirely. Otherwise,
+    best-effort reconstructs a PUT payload from the previously stored GET
+    response - GitHub's GET/PUT shapes for branch protection don't match 1:1
+    (e.g. users/teams come back as full objects, not login/slug strings), so
+    this only round-trips the common fields (restrictions, required reviews,
+    required status checks, enforce_admins). Anything more exotic
+    (required_signatures, lock_branch, allow_force_pushes, etc.) needs separate
+    endpoints and isn't restored here.
+    """
+    try:
+        owner, repo = get_project_owner_repo_from_link(repo_stat.github_repo_link)
+        if not owner or not repo or not repo_stat.protected_branch:
+            return True
+        headers = {"Accept": "application/vnd.github+json"}
+        if repo_stat.github_token:
+            headers["Authorization"] = f"token {repo_stat.github_token}"
+        url = f"https://api.github.com/repos/{owner}/{repo}/branches/{repo_stat.protected_branch}/protection"
+
+        if not repo_stat.previous_branch_protection:
+            response = requests.delete(url, headers=headers)
+            success = response.status_code == 204
+        else:
+            previous = json.loads(repo_stat.previous_branch_protection)
+            restrictions = previous.get('restrictions')
+            payload = {
+                "required_status_checks": {
+                    "strict": previous.get('required_status_checks', {}).get('strict', False),
+                    "contexts": previous.get('required_status_checks', {}).get('contexts', [])
+                } if previous.get('required_status_checks') else None,
+                "enforce_admins": previous.get('enforce_admins', {}).get('enabled', False) if previous.get('enforce_admins') else None,
+                "required_pull_request_reviews": {
+                    "required_approving_review_count": previous.get('required_pull_request_reviews', {}).get('required_approving_review_count', 1)
+                } if previous.get('required_pull_request_reviews') else None,
+                "restrictions": {
+                    "users": [u['login'] for u in restrictions.get('users', [])],
+                    "teams": [t['slug'] for t in restrictions.get('teams', [])],
+                    "apps": [a['slug'] for a in restrictions.get('apps', [])]
+                } if restrictions else None
+            }
+            response = requests.put(url, headers=headers, json=payload)
+            success = response.status_code in (200, 201)
+
+        if success:
+            repo_stat.protected_branch = ''
+            repo_stat.previous_branch_protection = ''
+            repo_stat.save(update_fields=['protected_branch', 'previous_branch_protection'])
+        return success
+    except Exception as e:
+        print(str(e))
+        return False
+def get_project_owner_repo_from_link(github_repo_link):
+    link_parts = github_repo_link.split('/')
+    if len(link_parts) < 5:
+        return None, None
+    return link_parts[3], link_parts[4]
+def _add_project_repository(request,id):
+    try:
+        project = get_object_or_404(Project,id=id)
+        role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
+        if not UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
+            return JsonResponse({'status':'Unauthorized access'},status=403)
+        data = json.loads(request.body)
+        github_repo_name = data.get('github_repo_name')
+        github_repo_link = data.get('github_repo_link')
+        github_token = data.get('github_token', '')
+        if not all([github_repo_name,github_repo_link]):
+            return JsonResponse({'status':'bad request',
+                                      'message':'github_repo_name and github_repo_link are required'},status=400)
+        repo_stat = ProjectRepoStats.objects.create(github_repo_name=github_repo_name,github_repo_link=github_repo_link,github_token=github_token)
+        project.repo_stats.add(repo_stat)
+        owner, repo = get_project_owner_repo_from_link(github_repo_link)
+        if owner and repo:
+            register_github_webhook(owner, repo, project, github_token)
+            if project.can_only_modify_from_app:
+                apply_branch_protection(owner, repo, github_token, repo_stat)
+        return JsonResponse({'status':'success','repo_id':repo_stat.id},status=200)
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
+def _delete_project_repository(request,id):
+    try:
+        project = get_object_or_404(Project,id=id)
+        role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
+        if not UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
+            return JsonResponse({'status':'Unauthorized access'},status=403)
+        data = json.loads(request.body)
+        repo_id = data.get('repo_id')
+        if not repo_id:
+            return JsonResponse({'status':'bad request','message':'repo_id is required'},status=400)
+        repo_stat = project.repo_stats.filter(id=repo_id).first()
+        if repo_stat is None:
+            return JsonResponse({'status':'bad request','message':'repository not linked to this project'},status=404)
+        if repo_stat.protected_branch:
+            revert_branch_protection(repo_stat)
+        project.repo_stats.remove(repo_stat)
+        return JsonResponse({'status':'success','message':'Repository removed from project'},status=200)
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
+@login_required
+@csrf_protect
+@require_http_methods(["POST","DELETE"])
+@ratelimit(key='user',rate='30/m',block=True)
+def api_handle_project_repositories(request,id):
+    match request.method:
+        case "POST":
+            return _add_project_repository(request,id)
+        case "DELETE":
+            return _delete_project_repository(request,id)
+        case _:
+            return JsonResponse({'status':'bad request'},status=400)
 def _get_project_requirements(request,id):
     try:
         project = get_object_or_404(Project,id=id)
@@ -311,10 +527,21 @@ def _get_project_tasks(request,id):
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
 def get_project_owner_repo(project):
-    root_link_parts = project.root_link.split('/')
+    repo_stat = project.repo_stats.first()
+    if repo_stat is None:
+        return None, None
+    root_link_parts = repo_stat.github_repo_link.split('/')
     if len(root_link_parts) < 5:
         return None, None
     return root_link_parts[3], root_link_parts[4]
+
+def get_project_repo_token(project):
+    repo_stat = project.repo_stats.first()
+    return repo_stat.github_token if repo_stat else None
+
+def get_repo_token(owner, repo):
+    repo_stat = ProjectRepoStats.objects.filter(github_repo_link__icontains=f'{owner}/{repo}').first()
+    return repo_stat.github_token if repo_stat else None
 
 def fetch_github_tree_with_sizes(owner, repo, branch='main'):
     """
@@ -322,8 +549,9 @@ def fetch_github_tree_with_sizes(owner, repo, branch='main'):
     blob's size so callers can detect when a cached tree has gone stale.
     """
     headers = {"Accept": "application/vnd.github.v3+json"}
-    if hasattr(settings, 'GITHUB_TOKEN'):
-        headers["Authorization"] = f"token {settings.GITHUB_TOKEN}"
+    token = get_repo_token(owner, repo)
+    if token:
+        headers["Authorization"] = f"token {token}"
 
     url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
     response = requests.get(url, headers=headers)
@@ -354,7 +582,10 @@ def get_project_tree_paths(project, branch='main'):
     github repo, reading from the same redis cache used by github_proxy_view.
     If the tree isn't cached yet, it's fetched from the GitHub API and cached.
     """
-    root_link_parts = project.root_link.split('/')
+    repo_stat = project.repo_stats.first()
+    if repo_stat is None:
+        return set()
+    root_link_parts = repo_stat.github_repo_link.split('/')
     if len(root_link_parts) < 5:
         return set()
     owner, repo = root_link_parts[3], root_link_parts[4]
@@ -365,8 +596,8 @@ def get_project_tree_paths(project, branch='main'):
         return {item['path'] for item in tree}
 
     headers = {"Accept": "application/vnd.github.v3+json"}
-    if hasattr(settings, 'GITHUB_TOKEN'):
-        headers["Authorization"] = f"token {settings.GITHUB_TOKEN}"
+    if repo_stat.github_token:
+        headers["Authorization"] = f"token {repo_stat.github_token}"
 
     url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
     response = requests.get(url, headers=headers)
@@ -518,8 +749,9 @@ def handle_file_content(request,owner, repo, path, branch='main'):
 
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={branch}"
     headers = {"Accept": "application/vnd.github.v3+json"}
-    if hasattr(settings, 'GITHUB_TOKEN'):
-        headers["Authorization"] = f"token {settings.GITHUB_TOKEN}"
+    token = get_repo_token(owner, repo)
+    if token:
+        headers["Authorization"] = f"token {token}"
 
     r = requests.get(url, headers=headers)
     if r.status_code == 200:
@@ -559,8 +791,9 @@ def github_proxy_view(request, owner, repo, path=""):
 
     url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
     headers = {"Accept": "application/vnd.github.v3+json"}
-    if hasattr(settings, 'GITHUB_TOKEN'):
-        headers["Authorization"] = f"token {settings.GITHUB_TOKEN}"
+    token = get_repo_token(owner, repo)
+    if token:
+        headers["Authorization"] = f"token {token}"
 
     response = requests.get(url, headers=headers)
 
@@ -759,11 +992,12 @@ def api_get_availible_languages(request):
         return JsonResponse({'status':'error','message':str(e)},status=500)
 def is_repo_private(owner,repo):
     try:
-        token = settings.GITHUB_TOKEN
         headers = {
-            "Authorization": f"token {token}",
             "Accept": "application/vnd.github+json"
         }
+        token = get_repo_token(owner, repo)
+        if token:
+            headers["Authorization"] = f"token {token}"
         url = f"https://api.github.com/repos/{owner}/{repo}"
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
@@ -774,9 +1008,11 @@ def is_repo_private(owner,repo):
 def get_default_branch(owner,repo):
     try:
         headers = {
-            "Authorization": f"token {settings.GITHUB_TOKEN}",
             "Accept": "application/vnd.github+json"
         }
+        token = get_repo_token(owner, repo)
+        if token:
+            headers["Authorization"] = f"token {token}"
         url = f"https://api.github.com/repos/{owner}/{repo}"
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
@@ -788,9 +1024,11 @@ def get_default_branch(owner,repo):
 def get_branch_sha(owner,repo,branch_name):
     try:
         headers = {
-            "Authorization": f"token {settings.GITHUB_TOKEN}",
             "Accept": "application/vnd.github+json"
         }
+        token = get_repo_token(owner, repo)
+        if token:
+            headers["Authorization"] = f"token {token}"
         url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch_name}"
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
@@ -803,7 +1041,10 @@ def get_all_github_repo_branches(owner,repo):
     try:
         with transaction.atomic():
             url = f'https://api.github.com/repos/{owner}/{repo}/branches'
-            headers = {"Authorization": f"token {settings.GITHUB_TOKEN}"}
+            headers = {}
+            token = get_repo_token(owner, repo)
+            if token:
+                headers["Authorization"] = f"token {token}"
             meta_res = requests.get(url, headers=headers) if is_repo_private(owner,repo) else requests.get(url)
             if meta_res.ok:
                 branches_json = meta_res.json()
@@ -821,14 +1062,19 @@ def get_all_github_repo_branches(owner,repo):
 def api_github_get_all_repo_branches(request):
     try:
         data = request.GET
-        repo_url = data.get('repo')
+        repo_id = data.get('repo_id')
         project_name = data.get('project')
-        if not all([repo_url,project_name]):
+        if not project_name:
             return JsonResponse({'status':'bad request',
-                                      'message':'wrong repo url or project name provided'},
+                                      'message':'project name is required'},
                                        status=403)
         project = get_object_or_404(Project, name=project_name)
-        owner,repo = get_project_owner_repo(project)
+        repo_stat = project.repo_stats.filter(id=repo_id).first() if repo_id else project.repo_stats.first()
+        if repo_stat is None:
+            return JsonResponse({'status':'bad request',
+                                      'message':'repo not linked to this project'},
+                                       status=403)
+        owner,repo = get_project_owner_repo_from_link(repo_stat.github_repo_link)
         if not all([owner,repo]):
             return JsonResponse({'status':'bad request',
                                       'message':'wrong url privided'},
@@ -873,11 +1119,12 @@ def push_files(request):
                     'locked_files': locked_by_others
                 }, status=423)
         message = f'[Pushed via GitSync]:{default_msg}'
+        project_obj = get_object_or_404(Project, id=project)
 
-        headers = {
-            "Authorization": f"token {settings.GITHUB_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        }
+        headers = {"Accept": "application/vnd.github.v3+json"}
+        token = get_repo_token(owner, repo)
+        if token:
+            headers["Authorization"] = f"token {token}"
 
         errors = []
         for path, content in files.items():
@@ -891,8 +1138,14 @@ def push_files(request):
             encoded_content = base64.b64encode(content.encode('utf-8')).decode('utf-8')
 
             put_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+            commit_message_body = f'{message} | {path} | {datetime.now().isoformat()}'
+            signature = hmac.new(
+                project_obj.app_signing_key.encode('utf-8'),
+                commit_message_body.encode('utf-8'),
+                hashlib.sha256
+            ).hexdigest()
             payload = {
-                "message": message,
+                "message": f'{commit_message_body}\n\nX-GitSync-Sig: {signature}',
                 "content": encoded_content,
                 "branch": branch
             }
@@ -1369,10 +1622,10 @@ def add_new_branch_to_repo(project,new_branch_name=None):
             new_sync_branch = f'Branch_created_w_Sentinel_Flow_at_{now}' if new_branch_name is None else new_branch_name
         default_branch_name = get_default_branch(owner,repo)
         master_branch_sha = get_branch_sha(owner,repo,default_branch_name)
-        headers = {
-            "Authorization": f"token {settings.GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
-        }
+        headers = {"Accept": "application/vnd.github+json"}
+        token = get_project_repo_token(project)
+        if token:
+            headers["Authorization"] = f"token {token}"
         data = {
             "ref": f'refs/heads/{new_sync_branch}',
             "sha": master_branch_sha
@@ -1395,10 +1648,10 @@ def modify_branch_from_repo(project,data):
         owner,repo = get_project_owner_repo(project)
         if not all([owner,repo]):
             return JsonResponse({'status': 'bad request','message': 'Internal server error'}, status=403)
-        headers = {
-            "Authorization": f"token {settings.GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
-        }
+        headers = {"Accept": "application/vnd.github+json"}
+        token = get_project_repo_token(project)
+        if token:
+            headers["Authorization"] = f"token {token}"
         url = f"https://api.github.com/repos/{owner}/{repo}/branches/{old_name}/rename"
         response = requests.post(url,headers=headers,json={"new_name":new_name})
         if response.status_code != 201:
@@ -1418,10 +1671,10 @@ def delete_branch_from_repo(project,data):
         default_branch_name = get_default_branch(owner,repo)
         if branch_name == default_branch_name:
             return JsonResponse({'status':'bad request','message':'Cannot delete the default branch'},status=400)
-        headers = {
-            "Authorization": f"token {settings.GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
-        }
+        headers = {"Accept": "application/vnd.github+json"}
+        token = get_project_repo_token(project)
+        if token:
+            headers["Authorization"] = f"token {token}"
         url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch_name}"
         response = requests.delete(url,headers=headers)
         if response.status_code != 204:
@@ -1469,10 +1722,10 @@ def api_merge_github_branches(request,id):
         if not visitor_permissions['can_merge_branches']:
             return JsonResponse({'status': 'Unauthorized access'}, status=403)
         url = f'https://api.github.com/repos/{owner}/{repo}/merges'
-        headers = {
-            "Authorization": f"token {settings.GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json"
-        }
+        headers = {"Accept": "application/vnd.github+json"}
+        token = get_project_repo_token(project)
+        if token:
+            headers["Authorization"] = f"token {token}"
         data = json.loads(request.body)
         base = data.get('base')
         head = data.get('head')
@@ -1484,7 +1737,7 @@ def api_merge_github_branches(request,id):
         body = {
           "base": base,
           "head": head,
-          "commit_message": "Merge feature-branch into main"
+          "commit_message": f"Merge feature-branch from {head} into {base}"
         }
         response = requests.post(url,headers=headers,json=body)
         response_code = response.status_code
@@ -1502,3 +1755,61 @@ def api_merge_github_branches(request,id):
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
+def verify_github_signature(payload_body, signature_header, secret):
+    """TODO raw scaffold: confirms this HTTP request really came from GitHub."""
+    if not signature_header or not signature_header.startswith('sha256='):
+        return False
+    expected = 'sha256=' + hmac.new(secret.encode('utf-8'), payload_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature_header)
+def commit_was_pushed_from_app(commit, secret):
+    """
+    TODO raw scaffold: looks for our HMAC trailer inside the commit message to
+    prove the commit content was produced by our backend (push_files), not a
+    direct git push / GitHub UI edit. Trailer format assumed: '\\n\\nX-GitSync-Sig: <hex>'
+    """
+    message = commit.get('message', '')
+    marker = 'X-GitSync-Sig:'
+    if marker not in message:
+        return False
+    body, _, tag = message.rpartition(marker)
+    tag = tag.strip()
+    expected_tag = hmac.new(secret.encode('utf-8'), body.strip().encode('utf-8'), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected_tag, tag)
+@csrf_exempt
+@require_POST
+def webhook_github(request):
+    try:
+        signature_header = request.headers.get('X-Hub-Signature-256')
+        payload = json.loads(request.body)
+        repo_full_name = payload.get('repository', {}).get('full_name')  # "owner/repo"
+        if not repo_full_name:
+            return JsonResponse({'status': 'bad request', 'message': 'missing repository info'}, status=400)
+
+        repo_stat = ProjectRepoStats.objects.filter(github_repo_link__icontains=repo_full_name).first()
+        if repo_stat is None:
+            return JsonResponse({'status': 'bad request', 'message': 'repo not tracked'}, status=404)
+
+        # TODO: a repo could theoretically be linked to more than one project (n-to-n) -
+        # decide how to handle that case instead of just taking the first one
+        project = repo_stat.projects.first()
+        if project is None:
+            return JsonResponse({'status': 'bad request', 'message': 'repo not linked to any project'}, status=404)
+
+        if not verify_github_signature(request.body, signature_header, project.app_signing_key):
+            return JsonResponse({'status': 'unauthorized', 'message': 'invalid signature'}, status=403)
+
+        if not project.can_only_modify_from_app:
+            return JsonResponse({'status': 'success', 'message': 'nothing to enforce for this project'}, status=200)
+
+        flagged = False
+        for commit in payload.get('commits', []):
+            if not commit_was_pushed_from_app(commit, project.app_signing_key):
+                flagged = True
+        if flagged and not project.flagged_external_push:
+            project.flagged_external_push = True
+            project.save(update_fields=['flagged_external_push'])
+
+        return JsonResponse({'status': 'success', 'flagged_external_push': flagged}, status=200)
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message':f'Internal server error,could not filter github request beacaues:{str(e)}'},status=500)

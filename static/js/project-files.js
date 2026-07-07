@@ -46,6 +46,39 @@ function onBranchChange(newBranch){
     updateActionButtonsVisibility(null);
     loadDirectory('');
 }
+function onRepoChange(repoId){
+    const repoSelect = document.getElementById('repo-select');
+    const option = repoSelect ? repoSelect.querySelector(`option[value="${repoId}"]`) : null;
+    if(!option) return;
+    window.djangoContext.project.owner_username = option.dataset.owner;
+    window.djangoContext.project.repo_name = option.dataset.repo;
+    Object.keys(repoCache).forEach(key => delete repoCache[key]);
+    activeFileDOMElement = null;
+    renderCode('');
+    updateActionButtonsVisibility(null);
+    refreshBranchesForActiveRepo(repoId);
+}
+async function refreshBranchesForActiveRepo(repoId){
+    const branchSelect = document.getElementById('branch-select');
+    try{
+        const url = `/projects/api/github/branches?repo_id=${encodeURIComponent(repoId)}&project=${encodeURIComponent(window.djangoContext.project.name)}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        if(data.status === 'success' && branchSelect){
+            branchSelect.innerHTML = '';
+            data.branches.forEach(branch => {
+                const opt = document.createElement('option');
+                opt.value = branch;
+                opt.textContent = branch;
+                branchSelect.appendChild(opt);
+            });
+            currentBranch = data.branches[0] || null;
+        }
+    }catch(error){
+        console.error('Eroare la refresh branch-uri:', error);
+    }
+    loadDirectory('');
+}
 function renderExplorer(items,currentPath){
         const container = document.getElementById("project-structure");
         container.innerHTML = "";

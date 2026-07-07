@@ -133,6 +133,8 @@ DEFAULT_SECTIONS = {
     'Certifications': config('CERTIFICATIONS_DEFAULT'),
 }
 GITHUB_TOKEN = config('GITHUB_TOKEN')
+# TODO: public URL GitHub can actually reach (ngrok tunnel in dev, real domain in prod)
+GITHUB_WEBHOOK_CALLBACK_URL = config('GITHUB_WEBHOOK_CALLBACK_URL', default='')
 
 INSTALLED_APPS = [
     'daphne',
