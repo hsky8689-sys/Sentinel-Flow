@@ -3,11 +3,12 @@ import json
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.contrib.auth.decorators import login_required
-from django.shortcuts import render
+from django.shortcuts import render, get_object_or_404
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
 from django_ratelimit.decorators import ratelimit
 from chat.service import ConversationService
+from projects.models import Project, UserProjectRole
 @login_required
 @require_http_methods(["GET"])
 @ratelimit(key='user_or_ip',rate='5/s',method='GET')
@@ -46,7 +47,7 @@ def load_user_conversations(request):
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 @login_required
-@require_http_methods(["GET"])
+@require_GET
 @ratelimit(key='user_or_ip',rate='5/s',method='GET')
 def load_chat_by_id(request,conversation_id):
     try:
@@ -157,3 +158,37 @@ def chat_message_api(request):
 
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=500)
+
+@login_required
+@require_http_methods(['POST'])
+@ratelimit(key='user_or_ip',rate='5/s',method='POST')
+def api_create_group_conversation(request):
+    try:
+        data = json.loads(request.body)
+        project_id = data.get('project_id')
+        member_ids = data.get('member_ids', [])
+        if not project_id:
+            return JsonResponse({'error': 'project_id is required'}, status=400)
+
+        project = get_object_or_404(Project, id=project_id)
+        requester_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+        if requester_role == 'visitor':
+            return JsonResponse({'error': 'You are not a member of this project'}, status=403)
+
+        valid_member_ids = set(
+            UserProjectRole.objects.filter(project=project, user_id__in=member_ids).values_list('user_id', flat=True)
+        )
+        valid_member_ids.add(request.user.id)
+        if len(valid_member_ids) < 2:
+            return JsonResponse({'error': 'At least one other project member is required'}, status=400)
+
+        conversation_id = ConversationService.create_group_conversation(project, list(valid_member_ids))
+        return JsonResponse({
+            'success': True,
+            'conversation_id': conversation_id,
+            'members': list(valid_member_ids)
+        }, status=200)
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)

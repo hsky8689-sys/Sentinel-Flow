@@ -16,7 +16,6 @@ class ConversationManager(models.Manager):
         messages = list(messages)
 
         return messages
-
 class MessagesManager(models.Manager):
     def send_message(self,user_id:int,conversation_id: int, message_content: str):
         new_message = Message(
@@ -39,6 +38,13 @@ class Conversation(models.Model):
     )
     is_group = models.BooleanField(
         default=False
+    )
+    project = models.ForeignKey(
+        'projects.Project',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='conversations'
     )
     participants = models.ManyToManyField(User, related_name='participated_conversations')
     objects = ConversationManager()
