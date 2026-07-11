@@ -59,3 +59,28 @@ class UserCacheKey(str, Enum):
     # Reserved for the future React-based inbox/notifications feature.
     # No manager method reads or writes this key yet.
     NOTIFICATIONS = 'users:notifications:{user_id}'
+
+
+class ChatCacheKey(str, Enum):
+    """
+    All three are paginated and append-only (new messages/conversations never
+    change older pages, they just get added past the end), so these are cached
+    with a short TTL instead of write-triggered invalidation: exact invalidation
+    would need to know every (page_number, page_size) combo a client ever used,
+    which isn't predictable from the write side without pattern-based deletes.
+    """
+    USER_CONVERSATIONS = 'chat:users:{user_id}:conversations:{page_number}:{page_size}'
+    PROJECT_CONVERSATIONS = 'chat:projects:{project_id}:conversations:{page_number}:{page_size}'
+    CONVERSATION_MESSAGES = 'chat:conversations:{conversation_id}:messages:{page_number}:{page_size}'
+
+
+class ProjectCacheKey(str, Enum):
+    # Role name a specific user holds in a project. Invalidated whenever that
+    # user's UserProjectRole row changes (reassignment, kick, join accepted).
+    USER_ROLE = 'projects:{project_id}:users_roles:{user_id}'
+    # Permission dict for a role NAME within a project - shared by every user
+    # who holds that role, not duplicated per user. Invalidated on role creation
+    # (there's no role-edit endpoint yet).
+    ROLE_PERMISSIONS = 'projects:{project_id}:role_permissions:{role_name}'
+    # One structure per project: list of {id, name, owner, repo, link} dicts.
+    REPOS = 'projects:{project_id}:repos'

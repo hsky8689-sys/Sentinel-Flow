@@ -18,12 +18,12 @@ from django.views.decorators.http import require_http_methods, require_POST, req
 from django_ratelimit.decorators import ratelimit
 
 from devnetwork import settings
-from devnetwork.caching import cache_manager, UserCacheKey
+from devnetwork.caching import cache_manager, UserCacheKey, ProjectCacheKey
 from projects.github_utils import get_project_owner_repo_from_link, get_project_owner_repo, get_project_repo_token, \
     get_repo_token, fetch_github_tree_with_sizes, get_project_tree_paths, invalidate_repo_cache, get_default_branch, \
     get_all_github_repo_branches, add_new_branch_to_repo, modify_branch_from_repo, delete_branch_from_repo, \
     verify_github_signature, commit_was_pushed_from_app, _add_project_repository, _delete_project_repository, \
-    _get_project_push_policy, _set_project_push_policy, _clear_flagged_external_push
+    _get_project_push_policy, _set_project_push_policy, _clear_flagged_external_push, get_project_repo_summaries
 from projects.project_helpers import get_user_file_permissions, _get_project_domains, _add_project_domains, \
     _delete_project_domains, _get_project_requirements, _add_project_requirements, _remove_project_requirements, \
     _remove_project_sections, _add_project_sections, _get_project_tasks, _add_project_task, _remove_project_tasks, \
@@ -47,23 +47,16 @@ def open_project_page(request,name):
     owner_username,repo_name='no_github_owner_set','no_github_name_set'
     branches = []
     active_repo_id = None
-    repos_for_frontend = []
-    for stat in ProjectRepoStats.objects.get_project_repos(project):
-        stat_owner,stat_repo = get_project_owner_repo_from_link(stat.github_repo_link)
-        repos_for_frontend.append({
-            'id':stat.id,
-            'name':stat.github_repo_name,
-            'owner':stat_owner,
-            'repo':stat_repo
-        })
-    # "primul repo gasit de query-uri" - project.repo_stats.first() with no explicit
-    # ordering, so it's whatever the DB returns first (insertion order in practice)
-    active_repo = project.repo_stats.first()
-    if active_repo:
-        active_repo_id = active_repo.id
-        active_owner,active_repo_name = get_project_owner_repo_from_link(active_repo.github_repo_link)
-        if active_owner and active_repo_name:
-            owner_username,repo_name = active_owner,active_repo_name
+    project_repos = get_project_repo_summaries(project)
+    repos_for_frontend = [
+        {'id': r['id'], 'name': r['name'], 'owner': r['owner'], 'repo': r['repo']}
+        for r in project_repos
+    ]
+    if project_repos:
+        active_repo = project_repos[0]
+        active_repo_id = active_repo['id']
+        if active_repo['owner'] and active_repo['repo']:
+            owner_username,repo_name = active_repo['owner'],active_repo['repo']
             branches = get_all_github_repo_branches(owner_username,repo_name)
     file_permissions = get_user_file_permissions(request.user,project)
     context_data = {
@@ -548,7 +541,7 @@ def push_files(request):
             else:
                 errors.append({'path':path,'error': put_res.json()})
 
-        invalidate_repo_cache(repo, owner)
+        invalidate_repo_cache(repo, owner, branch)
         if errors:
             return JsonResponse({'status': 'partial_error', 'errors': errors}, status=400)
         return JsonResponse({'status': 'success'})
@@ -593,6 +586,7 @@ def api_assign_users_to_role(request, id):
                     with transaction.atomic():
                         UserProjectRole.objects.filter(project=project, user=target_user).delete()
                         UserProjectRole.objects.create(project=project, user=target_user, role=target_role)
+                    cache_manager.delete(ProjectCacheKey.USER_ROLE.format(project_id=project.id, user_id=target_user.id))
                     assigned_users.append(username)
 
                 except User.DoesNotExist:
@@ -720,7 +714,6 @@ def api_handle_project_join_request(request):
             status='pending'
         )
 
-        # ✅ target e CharField cu project_id
         if not user_req.target:
             return JsonResponse({'status': 'error', 'message': 'No project associated with this request'}, status=400)
         project_id = user_req.target.strip("'\"")
@@ -738,6 +731,7 @@ def api_handle_project_join_request(request):
                 role=ProjectRole.objects.get(name='newbie')
             )
             cache_manager.delete(UserCacheKey.PROJECTS.format(user_id=user_req.sender_id))
+            cache_manager.delete(ProjectCacheKey.USER_ROLE.format(project_id=project.id, user_id=user_req.sender_id))
             user_req.status = 'accepted'
             user_req.save()
             return JsonResponse({'status': 'success', 'message': 'User added to project!'},status=200)
@@ -752,6 +746,7 @@ def api_handle_project_join_request(request):
                 user_req.status = 'accepted'
                 user_req.save()
             cache_manager.delete(UserCacheKey.PROJECTS.format(user_id=user_req.sender_id))
+            cache_manager.delete(ProjectCacheKey.USER_ROLE.format(project_id=project.id, user_id=user_req.sender_id))
             return JsonResponse({'status': 'success', 'message': 'User successfully added to the project!'}, status=200)
 
         elif action in ['reject', 'deny', 'declined']:
