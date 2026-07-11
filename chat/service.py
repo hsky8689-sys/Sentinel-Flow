@@ -24,6 +24,11 @@ class ConversationService:
         conv.participants.add(*members)
         return conv.id
     @staticmethod
+    def create_group_conversation(project, member_ids):
+        conv = Conversation.objects.create(is_group=True, project=project)
+        conv.participants.add(*member_ids)
+        return conv.id
+    @staticmethod
     def send_message(user_id, conversation_id, message_content, user_1on1=-1):
         if conversation_id == -1:
             conv = ConversationService.check_if_1o1_conversation_exist(user_id, user_1on1)
@@ -38,6 +43,13 @@ class ConversationService:
         try:
             ids = Conversation.objects.get_user_conversations(user_id, page_number, page_size)
             return ids
+        except Exception as e:
+            print(str(e))
+            return []
+    @staticmethod
+    def load_project_conversations(project_id,page_number,page_size=300):
+        try:
+            return Conversation.objects.get_project_conversations(project_id, page_number, page_size)
         except Exception as e:
             print(str(e))
             return []

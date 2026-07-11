@@ -5,7 +5,7 @@ from channels.layers import get_channel_layer
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, get_object_or_404
 from django.http import JsonResponse
-from django.views.decorators.http import require_http_methods
+from django.views.decorators.http import require_http_methods, require_GET
 from django_ratelimit.decorators import ratelimit
 from chat.service import ConversationService
 from projects.models import Project, UserProjectRole

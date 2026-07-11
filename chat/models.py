@@ -1,20 +1,41 @@
 from datetime import datetime, timezone
 from django.db import models
 from django.utils import timezone
+from devnetwork.caching import cache_manager, ChatCacheKey
 from users.models import User
+
+CHAT_LIST_CACHE_TIMEOUT = 30
+
 class ConversationManager(models.Manager):
     def get_user_conversations(self,user_id,page_number=1,page_size=100):
-        offset = page_number * page_size
-        conversations = self.filter(
-            participants=user_id
-        ).order_by('-last_message_timestamp')[offset: offset + page_size]
-        return list(conversations)
+        cache_key = ChatCacheKey.USER_CONVERSATIONS.format(user_id=user_id,page_number=page_number,page_size=page_size)
+        conversations = cache_manager.get(cache_key)
+        if conversations is None:
+            offset = page_number * page_size
+            conversations = list(self.filter(
+                participants=user_id
+            ).order_by('-last_message_timestamp')[offset: offset + page_size])
+            cache_manager.set(cache_key, conversations, timeout=CHAT_LIST_CACHE_TIMEOUT)
+        return conversations
+
+    def get_project_conversations(self,project_id,page_number=1,page_size=100):
+        cache_key = ChatCacheKey.PROJECT_CONVERSATIONS.format(project_id=project_id,page_number=page_number,page_size=page_size)
+        conversations = cache_manager.get(cache_key)
+        if conversations is None:
+            offset = page_number * page_size
+            conversations = list(self.filter(
+                project_id=project_id
+            ).order_by('-last_message_timestamp')[offset: offset + page_size])
+            cache_manager.set(cache_key, conversations, timeout=CHAT_LIST_CACHE_TIMEOUT)
+        return conversations
 
     def get_conversation_messages_paged(self, conversation_id, page_number=1,page_size=1000):
-        offset = page_number * page_size
-        messages = Message.objects.filter(conversation_id=conversation_id).order_by('timestamp')[offset: offset + page_size]
-        messages = list(messages)
-
+        cache_key = ChatCacheKey.CONVERSATION_MESSAGES.format(conversation_id=conversation_id,page_number=page_number,page_size=page_size)
+        messages = cache_manager.get(cache_key)
+        if messages is None:
+            offset = page_number * page_size
+            messages = list(Message.objects.filter(conversation_id=conversation_id).order_by('timestamp')[offset: offset + page_size])
+            cache_manager.set(cache_key, messages, timeout=CHAT_LIST_CACHE_TIMEOUT)
         return messages
 class MessagesManager(models.Manager):
     def send_message(self,user_id:int,conversation_id: int, message_content: str):

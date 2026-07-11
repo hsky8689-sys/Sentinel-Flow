@@ -21,6 +21,7 @@ app_name = "chat"
 urlpatterns = [
     path('', views.open_chat_room, name='chat_room'),
     path("api/send", views.chat_message_api, name="send_message"),
+    path("api/group/create", views.api_create_group_conversation, name="create_group_conversation"),
     path("api/<int:conversation_id>",views.load_chat_by_id,name="load_chat"),
     path("conversations/",views.load_user_conversations,name="load_conversations")
 ]
