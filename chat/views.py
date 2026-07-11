@@ -87,21 +87,16 @@ def open_chat_room(request):
         conv_id = request.GET.get("conv_id")
         user_101 = int(request.GET.get("user_1o1"))
 
-        # CAZUL 1: Există deja o conversație (Grup sau 1-la-1 vechi)
         if conv_id and conv_id != "null":
             return render(request, "html/chat_room.html", {
                 "user": request.user,
                 "chat_id": conv_id,
-                "user_101": -1  # Nu mai contează cine e userul, camera dictează
+                "user_101": -1
             })
 
-        # CAZUL 2: Situația de nișă - Vrem să vorbim cu cineva specific, dar nu știm dacă avem cameră
         elif user_101 and user_101 != "null":
-            # Verificăm dacă nu cumva s-a creat vreo cameră între timp în spate
-            # (Poate i-a scris el primul acum 5 minute și tu abia ai dat refresh)
             existing_conv = ConversationService.check_if_1o1_conversation_exist(request.user.id, user_101)
 
-            # Dacă există, îi dăm ID-ul camerei. Dacă nu, îi dăm -1 (să știe JS-ul să o creeze lazy la primul Send)
             final_chat_id = existing_conv.id if existing_conv else -1
 
             return render(request, "html/chat_room.html", {

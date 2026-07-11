@@ -5,7 +5,7 @@
     <div class="main-content">
         <div class="project-domains">
             {% for name in stats.domains  %}
-                <button class="project-domain">{{name.domain}}</button>         	
+                <button class="project-domain">{{name.domain}}</button>
             {% endfor %}
         </div>
         <div class="project-related-posts">
@@ -18,7 +18,6 @@
     <button class="btn btn-danger" onclick="leaveProject({{ stats.project_id }})">Leave Project</button>
 {% endif %}
 </div>
-            <script>alert({{user.role}})</script>
             <h1>Project description</h1>
             <br>
             <h2>{{stats.description}}</h2>
@@ -27,12 +26,64 @@
                 <h1>Loading files...</h1>
             </div>
             {% if stats.role != 'visitor' %}
+            <!-- permission table -->
+            <div id="file-permissions-section" style="margin: 20px 0; background: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #ddd;">
+    <h4 style="margin-bottom: 15px;">🔒 Status Permisiuni Fișiere</h4>
+    
+    <table style="width: 100%; border-collapse: collapse; text-align: left;">
+        <thead>
+            <tr style="background: #e9ecef; border-bottom: 2px solid #ccc;">
+                <th style="padding: 10px;">Nume Fișier</th>
+                <th style="padding: 10px;">Status</th>
+                <th style="padding: 10px;">Detalii</th>
+                <th style="padding: 10px; text-align: right;">Acțiune</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 10px;"><strong>{{ file.name }}</strong></td>
+                
+                <td style="padding: 10px;">
+                    {% if file.has_access %}
+                        <span style="color: green; font-weight: bold;">✔ Ai acces</span>
+                    {% else %}
+                        <span style="color: red; font-weight: bold;">✖ Restricționat</span>
+                    {% endif %}
+                </td>
+                
+                <td style="padding: 10px;">
+                    {% if not file.has_access %}
+                        <small style="color: #666;">Blocat de: {{ file.locked_by|default:"Admin" }}</small>
+                    {% else %}
+                        <small style="color: #999;">-</small>
+                    {% endif %}
+                </td>
+                
+                <td style="padding: 10px; text-align: right;">
+                    {% if file.has_access %}
+                        <button style="padding: 5px 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                            Deschide
+                        </button>
+                    {% else %}
+                        <button class="btn-request-file" 
+                                data-filepath="{{ file.name }}" 
+                                data-project="{{ project.id }}" 
+                                onclick="requestFileAccess(this)"
+                                style="padding: 5px 10px; background: #ffc107; color: black; border: none; border-radius: 4px; cursor: pointer;">
+                            Request Access
+                        </button>
+                    {% endif %}
+                </td>
+            </tr>
+            </tbody>
+    </table>
+</div>
             <div id="code-view" style="height: 400px; width: 100%;"></div>
                     <select id="languages">
-                        
+
                     </select>
                     <textarea rows="45" cols="100" placeholder="Comment text." id="code-textarea" style="margin-top: 10px;">
-                        
+
                     </textarea>
                     <div style="margin-top: 10px;">
                         <button onclick="runCode()" style="padding: 10px; background: #28a745; color: white; border: none; cursor: pointer;">

@@ -233,7 +233,7 @@ class RequestManager(models.Manager):
                 receiver=receiver,
                 request_type='friend',
                 status= 'pending',
-                timestamp= timezone.now
+                timestamp= timezone.now()
             )
             return obj
         except Exception as err:

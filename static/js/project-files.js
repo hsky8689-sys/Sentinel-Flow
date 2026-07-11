@@ -68,7 +68,6 @@ function renderExplorer(items,currentPath){
 async function displayFileContent(path){
     activeFileDOMElement = path;
     if(repoCache[path]){
-        alert('fisierul era in cache');
         console.log(`Afisam cache pentru: ${path}`)
         renderCode(repoCache[path])
         return;

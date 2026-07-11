@@ -20,7 +20,7 @@ async function loadPage(context){
     const domains_div = document.getElementsByClassName("project-domains");
     if(role === 'visitor'){
         console.log('fetching requirements');
-        getProjectRequirements();
+        await getProjectRequirements();
     }
 }
 async function goToMainProjectPage(project_name){
@@ -217,7 +217,6 @@ async function requestJoin(projectId) {
         const data = await response.json();
 
         if (data.status === 'success') {
-            // Transformăm butonul în pending vizual
             joinBtn.textContent = 'Join Request Pending...';
             joinBtn.classList.remove('btn-primary');
             joinBtn.classList.add('btn-secondary');
@@ -231,5 +230,49 @@ async function requestJoin(projectId) {
         alert('Eroare de rețea. Verifică consola.');
         joinBtn.disabled = false;
         joinBtn.textContent = originalText;
+    }
+}
+async function requestFileAccess(btn) {
+    // Extragem datele sigure din data-attributes-urile butonului
+    const filepath = btn.getAttribute('data-filepath');
+    const projectId = btn.getAttribute('data-project');
+
+    if (!filepath || !projectId) {
+        console.error("Lipsesc atributele de pe buton.");
+        return;
+    }
+
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.textContent = 'Se trimite...';
+
+    try {
+        const response = await fetch(`/api/projects/${projectId}/request-file/`, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'),
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                filepath: filepath
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.status === 'success') {
+            btn.textContent = 'Pending...';
+            btn.classList.remove('btn-warning');
+            btn.classList.add('btn-secondary');
+        } else {
+            alert('Eroare: ' + data.message);
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    } catch (error) {
+        console.error('Eroare fetch fișier:', error);
+        alert('Eroare de rețea. Verifică consola.');
+        btn.disabled = false;
+        btn.textContent = originalText;
     }
 }

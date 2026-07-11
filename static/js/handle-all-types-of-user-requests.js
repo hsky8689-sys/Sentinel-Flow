@@ -12,21 +12,20 @@ function getCookie(name){
             }
             return cookieValue;
 }
-async function handleProjectJoinRequest(senderId, receiverId, action, projectId) {
-    if (!action || !projectId) return;
+async function handleProjectJoinRequest(senderId, receiverId, action) {
+    if (!action) return;
 
     try {
-        const response = await fetch(`/projects/api/requests/project/handle/`, {
+        const response = await fetch('/projects/api/requests/project/handle/', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'X-CSRFToken': getCookie('csrftoken')
             },
             body: JSON.stringify({
-                'sender_id': senderId,
-                'receiver_id': receiverId,
-                'action': action,
-                'project_id': projectId
+                sender_id: senderId,
+                receiver_id: receiverId,
+                action: action
             })
         });
         const data = await response.json();
@@ -37,15 +36,15 @@ async function handleProjectJoinRequest(senderId, receiverId, action, projectId)
             alert(data.message);
         }
     } catch (error) {
-        console.error('Eroare la procesarea cererii:', error);
+        console.error('Eroare:', error);
     }
 }
-
-async function handleFriendRequest(senderId, receiverId, action) {
+async function handleFriendRequestFromConversations(senderId, receiverId, action) {
     if (!action) return;
 
     try {
-        const response = await fetch(`/api/requests/friend/handle/`, {
+        const desiredUrl = action === 'accept' ? `/users/${senderId}/accept-friend-request/` : `/users/${senderId}/accept-friend-request/`
+        const response = await fetch(desiredUrl, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

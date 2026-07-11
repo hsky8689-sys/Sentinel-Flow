@@ -2,6 +2,7 @@ from django.contrib.auth import views as auth_views
 from django.shortcuts import redirect
 from django.urls import path
 
+from projects.views import api_request_file_access
 from users.views import signup_page, acces_profile, api_add_skill, api_delete_skill, search_page, \
     search_api, create_project, api_send_friend_request, connections_page, api_accept_friend_request, api_remove_friend, \
     api_cancel_request
@@ -25,5 +26,6 @@ urlpatterns = [
     path('<int:sender>/accept-friend-request/',api_accept_friend_request,name='send_friend_request'),
     path('<int:removed>/remove-friend/',api_remove_friend,name='remove_friend'),
     path('<int:id>/cancel-request/',api_cancel_request,name='cancel-request'),
-    path('connections-page/',connections_page,name='view_connections')
+    path('connections-page/',connections_page,name='view_connections'),
+    path('api/projects/<int:project_id>/request-file/', api_request_file_access, name='request_file_access'),
 ]

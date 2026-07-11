@@ -15,8 +15,8 @@
                 <div class="request-card" id="req-friend-{{ req.sender_id }}-{{ req.receiver_id }}">
                     <span>Cerere de la <strong>{{ req.sender.username }}</strong></span>
                     <div class="actions">
-                        <button class="btn-accept" onclick="handleFriendRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'accept')">Accept</button>
-                        <button class="btn-reject" onclick="handleFriendRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'reject')">Reject</button>
+                        <button class="btn-accept" onclick="handleFriendRequestFromConversations('{{ req.sender_id }}', '{{ req.receiver_id }}', 'accept')">Accept</button>
+                        <button class="btn-reject" onclick="handleFriendRequestFromConversations('{{ req.sender_id }}', '{{ req.receiver_id }}', 'reject')">Reject</button>
                     </div>
                 </div>
                 {% endif %}
@@ -35,7 +35,7 @@
                     <span><strong>{{ req.sender.username }}</strong> vrea să intre în proiect</span>
                     <div class="actions">
                         <button class="btn-accept" onclick="handleProjectJoinRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'accept', {{ req.target|safe }})">Accept</button>
-<button class="btn-reject" onclick="handleProjectJoinRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'reject', {{ req.target|safe }})">Reject</button>
+                        <button class="btn-reject" onclick="handleProjectJoinRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'reject', {{ req.target|safe }})">Reject</button>
                     </div>
                 </div>
                 {% endif %}
@@ -53,8 +53,14 @@
                 <div class="request-card" id="req-file-{{ req.sender_id }}-{{ req.receiver_id }}">
                     <span><strong>{{ req.sender.username }}</strong> cere acces la un fișier</span>
                     <div class="actions">
-                        <button class="btn-accept" onclick="handleFileAccessRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'accept')">Accept</button>
-                        <button class="btn-reject" onclick="handleFileAccessRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'reject')">Reject</button>
+                        <button class="btn-accept" 
+    onclick="handleProjectJoinRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'accept')">
+    Accept
+</button>
+<button class="btn-reject" 
+    onclick="handleProjectJoinRequest('{{ req.sender_id }}', '{{ req.receiver_id }}', 'reject')">
+    Reject
+</button>
                     </div>
                 </div>
                 {% endif %}

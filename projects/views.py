@@ -687,7 +687,7 @@ def api_handle_project_join_request(request):
         receiver_id = data.get('receiver_id')
 
         if not all([action, sender_id, receiver_id]):
-            return JsonResponse({'status': 'error', 'message': 'Missing parameters in request.'}, status=400)
+            return JsonResponse({'status': 'error', 'message': 'Missing parameters'}, status=400)
 
         user_req = get_object_or_404(
             UserRequest,
@@ -697,38 +697,77 @@ def api_handle_project_join_request(request):
             status='pending'
         )
 
-        project = get_object_or_404(Project, id=int(user_req.target))
+        # ✅ target e CharField cu project_id
+        if not user_req.target:
+            return JsonResponse({'status': 'error', 'message': 'No project associated with this request'}, status=400)
+        project_id = user_req.target.strip("'\"")
+        project = get_object_or_404(Project, id=int(project_id))
 
-        # 4. Verificăm dacă userul care a cerut accesul nu cumva a intrat deja în proiect între timp
         if UserProjectRole.objects.get_user_role_in_project(project, user_req.sender) != 'visitor':
             user_req.status = 'accepted'
             user_req.save()
-            return JsonResponse({'status': 'error', 'message': 'User is already a member of this project.'}, status=400)
+            return JsonResponse({'status': 'error', 'message': 'User is already a member'}, status=400)
 
-        # 5. Executăm logica în funcție de decizia luată în UI
         if action == 'accept':
-            # Îi creăm rolul de membru în proiect
             UserProjectRole.objects.create(
                 user=user_req.sender,
                 project=project,
-                role=ProjectRole.objects.get(name='newbie') # Rolul tău default
+                role=ProjectRole.objects.get(name='newbie')
             )
             user_req.status = 'accepted'
             user_req.save()
-            return JsonResponse({'status': 'success', 'message': 'User successfully added to the project!'}, status=200)
+            return JsonResponse({'status': 'success', 'message': 'User added to project!'},status=200)
 
-        elif action in ['reject', 'deny', 'declined']:
-            # Folosim 'declined' pentru că așa ai definit în model choices/constraints
+        elif action in ['reject', 'decline']:
             user_req.status = 'declined'
             user_req.save()
-            return JsonResponse({'status': 'success', 'message': 'Project join request declined.'}, status=200)
+            return JsonResponse({'status': 'success', 'message': 'Request declined.'},status=200)
 
         else:
-            return JsonResponse({'status': 'error', 'message': 'Unknown action.'}, status=400)
+            return JsonResponse({'status': 'error', 'message': 'Unknown action'}, status=400)
 
     except json.JSONDecodeError:
-        return JsonResponse({'status': 'error', 'message': 'Invalid JSON format.'}, status=400)
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON'}, status=400)
     except ProjectRole.DoesNotExist:
-        return JsonResponse({'status': 'error', 'message': 'Default role "newbie" was not found in DB.'}, status=500)
+        return JsonResponse({'status': 'error', 'message': 'Role "newbie" not found'}, status=500)
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+@login_required
+@require_POST
+def api_request_file_access(request, project_id):
+    try:
+        data = json.loads(request.body)
+        filepath = data.get('filepath')
+
+        if not filepath:
+            return JsonResponse({'status': 'error', 'message': 'Calea fișierului lipsește.'}, status=400)
+
+        project = get_object_or_404(Project, id=project_id)
+
+        # 1. Găsim adminii proiectului care pot aproba cererea
+        # Adaptează interogarea în funcție de cum e definit rolul de admin la tine
+        project_admins = User.objects.filter(
+            user__project=project,
+            user__role__can_change_project_settings=True
+        ).distinct()
+
+        if not project_admins.exists():
+            return JsonResponse({'status': 'error', 'message': 'Proiectul nu are admini capabili să aprobe.'}, status=404)
+
+        # 2. Creăm cererea de tip 'file' pentru admin(i)
+        # Salvăm calea fișierului direct în câmpul 'target'
+        for admin in project_admins:
+            UserRequest.objects.update_or_create(
+                sender=request.user,
+                receiver=admin,
+                target=filepath,
+                request_type='file',
+                defaults={'status': 'pending'}
+            )
+
+        return JsonResponse({'status': 'success', 'message': 'Cerere trimisă cu succes!'}, status=200)
+
+    except json.JSONDecodeError:
+        return JsonResponse({'status': 'error', 'message': 'JSON invalid.'}, status=400)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
