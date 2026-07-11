@@ -34,7 +34,7 @@ urlpatterns = [
     path('api/requests/file-writers/',api_request_file_share,name='request-file-share'),
     path('api/requests/file-writers/handle',api_handle_request_file_share,name='handle-request-file-share'),
     path('api/github/<int:id>/merges',api_merge_github_branches,name='merge-branches'),
-    path('api/github-webhook/',webhook_github,name='webhook-github'),
+    path('api/<int:id>/github-webhook/',webhook_github,name='webhook-github'),
     path('api/<int:id>/',api_handle_project_repositories,name='add-repo-to-project'),
 ]
 

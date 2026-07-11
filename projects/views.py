@@ -5,8 +5,6 @@ import hmac
 import json
 import re
 from datetime import datetime
-
-import django.db
 import requests
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
@@ -20,28 +18,19 @@ from django.views.decorators.http import require_http_methods, require_POST, req
 from django_ratelimit.decorators import ratelimit
 
 from devnetwork import settings
-from projects.models import Project, UserProjectRole, ProjectDomain, ProjectSkillRequirement, ProjectRequirementSection, \
+from projects.github_utils import get_project_owner_repo_from_link, get_project_owner_repo, get_project_repo_token, \
+    get_repo_token, fetch_github_tree_with_sizes, get_project_tree_paths, invalidate_repo_cache, get_default_branch, \
+    get_all_github_repo_branches, add_new_branch_to_repo, modify_branch_from_repo, delete_branch_from_repo, \
+    verify_github_signature, commit_was_pushed_from_app, _add_project_repository, _delete_project_repository
+from projects.project_helpers import get_user_file_permissions, _get_project_domains, _add_project_domains, \
+    _delete_project_domains, _get_project_requirements, _add_project_requirements, _remove_project_requirements, \
+    _remove_project_sections, _add_project_sections, _get_project_tasks, _add_project_task, _remove_project_tasks, \
+    _get_project_roles, _add_project_role
+from projects.models import Project, UserProjectRole, ProjectDomain, \
     ProjectTask, ProjectRole, ResourceAccess, TaskResourceAccess, ProjectTaskParticipation, ProjectRepoStats
 from users.models import User, UserRequest
 
 
-def get_user_file_permissions(user,project):
-    try:
-        if project is None:
-            return {}
-        all_project_files = get_project_tree_paths(project,'master')
-        srv = TaskResourceAccess.objects
-        accessible_paths = srv.get_user_accessible_paths(user, project)
-        res = {}
-        for file in all_project_files:
-            if srv.path_is_covered(file, accessible_paths):
-                res[file]='ACCESS'
-            else:
-                res[file]='DENY'
-        return res
-    except Exception as e:
-        print(str(e))
-        return {}
 @login_required
 @csrf_protect
 @require_GET
@@ -124,48 +113,6 @@ def open_project_settings(request, name):
         'user_username': request.user.username,
     }
     return render(request, 'html/project_settings_page.html', {'stats': context_data})
-def _get_project_domains(request,id):
-    try:
-        project = get_object_or_404(Project,id=id)
-        domains = ProjectDomain.objects.filter(project_id=project.id)
-        return JsonResponse({'status':'success','domains':list(domains.values())})
-    except django.db.DatabaseError:
-        return JsonResponse({'status': 'error', 'code': 500})
-def _add_project_domains(request,id):
-    try:
-        project = get_object_or_404(Project,id=id)
-        role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
-        if UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
-            data = json.loads(request.body)
-            domains = data.get('newDomains',[])
-            succes = ProjectDomain.objects.add_domains_to_project(project,domains)
-            return JsonResponse({'status':'succes' if len(succes) == len(domains) else 'error',
-                         'code':200 if len(succes) == len(domains) else 404
-            })
-        else:
-            return JsonResponse({'status':'Unauthorized access','code':403})
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
-def _delete_project_domains(request,id):
-    try:
-            project = get_object_or_404(Project, id=id)
-            role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
-            if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
-                data = json.loads(request.body)
-                domains = data.get('removedDomains', [])
-                if domains is None or len(domains) == 0:
-                    return JsonResponse({'status': 'Bad request by user','message':'No domains were added into request'},status=402)
-                success = ProjectDomain.objects.remove_domains_from_project(project, domains)
-                if success:
-                    return JsonResponse({'status': 'succes','message':'Requested domains were succesfully removed'
-                                     },status=200)
-                else:
-                    return JsonResponse({'status': 'error','message':'Internal server error'
-                                         },status=500)
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 @login_required
 @csrf_protect
 @require_http_methods(["GET","POST","DELETE"])
@@ -180,193 +127,6 @@ def api_project_domains(request,id):
             return _add_project_domains(request,id)
         case "DELETE":
             return _delete_project_domains(request,id)
-def register_github_webhook(owner, repo, project, token):
-    """
-    TODO raw scaffold: registers a 'push' webhook on the given repo, signed with
-    the project's own app_signing_key (reused here as the webhook secret too).
-    """
-    try:
-        headers = {"Accept": "application/vnd.github+json"}
-        if token:
-            headers["Authorization"] = f"token {token}"
-        url = f"https://api.github.com/repos/{owner}/{repo}/hooks"
-        payload = {
-            "name": "web",
-            "active": True,
-            "events": ["push"],
-            "config": {
-                "url": settings.GITHUB_WEBHOOK_CALLBACK_URL,  # TODO: must be a public URL (ngrok in dev)
-                "content_type": "json",
-                "secret": project.app_signing_key,
-                "insecure_ssl": "0"
-            }
-        }
-        response = requests.post(url, headers=headers, json=payload)
-        return response.status_code == 201
-    except Exception as e:
-        print(str(e))
-        return False
-def get_github_username(token):
-    try:
-        headers = {"Accept": "application/vnd.github+json"}
-        if token:
-            headers["Authorization"] = f"token {token}"
-        response = requests.get("https://api.github.com/user", headers=headers)
-        if response.status_code == 200:
-            return response.json().get('login')
-        return None
-    except Exception as e:
-        print(str(e))
-        return None
-def apply_branch_protection(owner, repo, token, repo_stat):
-    """
-    TODO raw scaffold: restricts push access on the repo's default branch to
-    only the GitHub account behind `token`, saving whatever protection existed
-    before (if any) on `repo_stat` so it can be restored with revert_branch_protection.
-
-    Caveat: if `token` belongs to a personal account (not a dedicated bot/service
-    account), that same person can still push manually with their own git
-    credentials - this only blocks *other* collaborators, not the token's own owner.
-    """
-    try:
-        headers = {"Accept": "application/vnd.github+json"}
-        if token:
-            headers["Authorization"] = f"token {token}"
-        branch = get_default_branch(owner, repo)
-        if not branch:
-            return False
-        url = f"https://api.github.com/repos/{owner}/{repo}/branches/{branch}/protection"
-
-        existing = requests.get(url, headers=headers)
-        previous_protection = existing.json() if existing.status_code == 200 else None
-
-        app_username = get_github_username(token)
-        if not app_username:
-            return False
-
-        payload = {
-            "required_status_checks": None,
-            "enforce_admins": None,
-            "required_pull_request_reviews": None,
-            "restrictions": {
-                "users": [app_username],
-                "teams": [],
-                "apps": []
-            }
-        }
-        response = requests.put(url, headers=headers, json=payload)
-        if response.status_code not in (200, 201):
-            return False
-
-        repo_stat.protected_branch = branch
-        repo_stat.previous_branch_protection = json.dumps(previous_protection) if previous_protection else ''
-        repo_stat.save(update_fields=['protected_branch', 'previous_branch_protection'])
-        return True
-    except Exception as e:
-        print(str(e))
-        return False
-def revert_branch_protection(repo_stat):
-    """
-    TODO raw scaffold: undoes apply_branch_protection. If the branch had no
-    protection before we touched it, removes protection entirely. Otherwise,
-    best-effort reconstructs a PUT payload from the previously stored GET
-    response - GitHub's GET/PUT shapes for branch protection don't match 1:1
-    (e.g. users/teams come back as full objects, not login/slug strings), so
-    this only round-trips the common fields (restrictions, required reviews,
-    required status checks, enforce_admins). Anything more exotic
-    (required_signatures, lock_branch, allow_force_pushes, etc.) needs separate
-    endpoints and isn't restored here.
-    """
-    try:
-        owner, repo = get_project_owner_repo_from_link(repo_stat.github_repo_link)
-        if not owner or not repo or not repo_stat.protected_branch:
-            return True
-        headers = {"Accept": "application/vnd.github+json"}
-        if repo_stat.github_token:
-            headers["Authorization"] = f"token {repo_stat.github_token}"
-        url = f"https://api.github.com/repos/{owner}/{repo}/branches/{repo_stat.protected_branch}/protection"
-
-        if not repo_stat.previous_branch_protection:
-            response = requests.delete(url, headers=headers)
-            success = response.status_code == 204
-        else:
-            previous = json.loads(repo_stat.previous_branch_protection)
-            restrictions = previous.get('restrictions')
-            payload = {
-                "required_status_checks": {
-                    "strict": previous.get('required_status_checks', {}).get('strict', False),
-                    "contexts": previous.get('required_status_checks', {}).get('contexts', [])
-                } if previous.get('required_status_checks') else None,
-                "enforce_admins": previous.get('enforce_admins', {}).get('enabled', False) if previous.get('enforce_admins') else None,
-                "required_pull_request_reviews": {
-                    "required_approving_review_count": previous.get('required_pull_request_reviews', {}).get('required_approving_review_count', 1)
-                } if previous.get('required_pull_request_reviews') else None,
-                "restrictions": {
-                    "users": [u['login'] for u in restrictions.get('users', [])],
-                    "teams": [t['slug'] for t in restrictions.get('teams', [])],
-                    "apps": [a['slug'] for a in restrictions.get('apps', [])]
-                } if restrictions else None
-            }
-            response = requests.put(url, headers=headers, json=payload)
-            success = response.status_code in (200, 201)
-
-        if success:
-            repo_stat.protected_branch = ''
-            repo_stat.previous_branch_protection = ''
-            repo_stat.save(update_fields=['protected_branch', 'previous_branch_protection'])
-        return success
-    except Exception as e:
-        print(str(e))
-        return False
-def get_project_owner_repo_from_link(github_repo_link):
-    link_parts = github_repo_link.split('/')
-    if len(link_parts) < 5:
-        return None, None
-    return link_parts[3], link_parts[4]
-def _add_project_repository(request,id):
-    try:
-        project = get_object_or_404(Project,id=id)
-        role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
-        if not UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
-            return JsonResponse({'status':'Unauthorized access'},status=403)
-        data = json.loads(request.body)
-        github_repo_name = data.get('github_repo_name')
-        github_repo_link = data.get('github_repo_link')
-        github_token = data.get('github_token', '')
-        if not all([github_repo_name,github_repo_link]):
-            return JsonResponse({'status':'bad request',
-                                      'message':'github_repo_name and github_repo_link are required'},status=400)
-        repo_stat = ProjectRepoStats.objects.create(github_repo_name=github_repo_name,github_repo_link=github_repo_link,github_token=github_token)
-        project.repo_stats.add(repo_stat)
-        owner, repo = get_project_owner_repo_from_link(github_repo_link)
-        if owner and repo:
-            register_github_webhook(owner, repo, project, github_token)
-            if project.can_only_modify_from_app:
-                apply_branch_protection(owner, repo, github_token, repo_stat)
-        return JsonResponse({'status':'success','repo_id':repo_stat.id},status=200)
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
-def _delete_project_repository(request,id):
-    try:
-        project = get_object_or_404(Project,id=id)
-        role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
-        if not UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
-            return JsonResponse({'status':'Unauthorized access'},status=403)
-        data = json.loads(request.body)
-        repo_id = data.get('repo_id')
-        if not repo_id:
-            return JsonResponse({'status':'bad request','message':'repo_id is required'},status=400)
-        repo_stat = project.repo_stats.filter(id=repo_id).first()
-        if repo_stat is None:
-            return JsonResponse({'status':'bad request','message':'repository not linked to this project'},status=404)
-        if repo_stat.protected_branch:
-            revert_branch_protection(repo_stat)
-        project.repo_stats.remove(repo_stat)
-        return JsonResponse({'status':'success','message':'Repository removed from project'},status=200)
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
 @login_required
 @csrf_protect
 @require_http_methods(["POST","DELETE"])
@@ -379,73 +139,6 @@ def api_handle_project_repositories(request,id):
             return _delete_project_repository(request,id)
         case _:
             return JsonResponse({'status':'bad request'},status=400)
-def _get_project_requirements(request,id):
-    try:
-        project = get_object_or_404(Project,id=id)
-        succes = ProjectSkillRequirement.objects.get_requirements_grouped_by_sections(project)
-        return JsonResponse({'status':'succes','requirements':succes})
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
-def _add_project_requirements(request,id):
-    try:
-        with transaction.atomic():
-            project = get_object_or_404(Project, id=id)
-            role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
-            if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
-                data = json.loads(request.body)
-                requirements = data.get('newRequirements',[])
-                if requirements is None or len(requirements) == 0:
-                    return JsonResponse({'status': 'Bad request by user', 'message': 'No requirements were added into request'},
-                                        status=402)
-                manager = ProjectSkillRequirement.objects
-                section_manager = ProjectRequirementSection.objects
-                batches = {}
-                for req in requirements:
-                    if batches.get(req[0]):
-                        batches[req[0]].append(req[1])
-                    else:
-                        batches[req[0]] = [req[1]]
-                for key in batches.keys():
-                    section = section_manager.get(project=project,name=key)
-                    added_requirements = manager.add_skill_requirements(section,batches[key])
-                    if section is None or (added_requirements is None or len(added_requirements)==0):
-                        transaction.set_rollback(True)
-                return JsonResponse({'status':'success','message':'Requirements were succesfully added'},status=200)
-            else:
-                return JsonResponse({'status': 'Unauthorized access'},status=403)
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
-def _remove_project_requirements(request,id):
-    try:
-        with transaction.atomic():
-            project = get_object_or_404(Project, id=id)
-            role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
-            if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
-                data = json.loads(request.body)
-                requirements = data.get('removedRequirements',[])
-                if requirements is None or len(requirements) == 0:
-                    return JsonResponse({'status': 'bad request', 'message':'No requirements added'},status=402)
-                manager = ProjectSkillRequirement.objects
-                section_manager = ProjectRequirementSection.objects
-                batches = {}
-                for req in requirements:
-                    if batches.get(req[0]):
-                        batches[req[0]].append(req[1])
-                    else:
-                        batches[req[0]] = [req[1]]
-                for key in batches.keys():
-                    section = section_manager.get(project=project,name=key)
-                    removed_requirements = manager.remove_skill_requirements(section,batches[key])
-                    if section is None or not removed_requirements:
-                        transaction.set_rollback(True)
-                return JsonResponse({'status':'success','message':'Requirements were successfully removed'},status=200)
-            else:
-                return JsonResponse({'status': 'Unauthorized access'},status=403)
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 @login_required
 @csrf_protect
 @require_http_methods(["GET","POST","DELETE"])
@@ -460,42 +153,6 @@ def api_project_requirements(request,id):
             return _add_project_requirements(request,id)
         case "DELETE":
             return _remove_project_requirements(request,id)
-def _remove_project_sections(request,id):
-    try:
-        project = get_object_or_404(Project, id=id)
-        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
-        if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
-            data = json.loads(request.body)
-            requirements = data.get('removedSections',[])
-            if requirements is None or requirements == []:
-                return JsonResponse({'status': 'error', 'message': 'No sections were requested for deletion'}, status=400)
-            deleted = ProjectRequirementSection.objects.remove_requirement_sections(project,requirements)
-            if deleted == 0:
-                return JsonResponse({'status': 'error', 'message':'Could not delete sections'},status=500)
-            else:
-                return JsonResponse({'status':'succes','message':'Sections were succesfully deleted'},status=200)
-        else:
-            return JsonResponse({'status': 'Unauthorized access'},status=403)
-    except Exception as e:
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
-def _add_project_sections(request,id):
-    try:
-        project = get_object_or_404(Project, id=id)
-        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
-        if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
-            data = json.loads(request.body)
-            requirements = data.get('newSections',[])
-            if requirements is None or len(requirements) == 0:
-                return JsonResponse({'status': 'bad request','message': 'No sections added to the request'}, status=402)
-            res = ProjectRequirementSection.objects.add_requirement_sections(project,requirements)
-            if res is None or len(res) == 0:
-                return JsonResponse({'status': 'error', 'message': 'Sections could not be added'},status=500)
-            return JsonResponse({'status':'succes','message':'Sections were successfully added'},status=200)
-        else:
-            return JsonResponse({'status': 'Unauthorized access'},status=403)
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 @login_required
 @csrf_protect
 @require_http_methods(["POST","DELETE"])
@@ -507,181 +164,6 @@ def api_project_requirement_sections(request,id):
             return _add_project_sections(request,id)
         case "DELETE":
             return _remove_project_sections(request,id)
-def _get_project_tasks(request,id):
-    try:
-        project = get_object_or_404(Project, id=id)
-        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
-        if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
-            tasks = list(ProjectTask.objects.get_project_tasks(project).values())
-            if tasks is None or len(tasks) == 0:
-                return JsonResponse({'status': 'success',
-                                     'message': 'No tasks were found for the given project',
-                                     'tasks': []}, status=404)
-            else:
-                return JsonResponse({'status': 'success',
-                                     'message': 'Tasks were successfully retrieved',
-                                     'tasks': tasks}, status=200)
-        else:
-            return JsonResponse({'status': 'Unauthorized access'},status=403)
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
-def get_project_owner_repo(project):
-    repo_stat = project.repo_stats.first()
-    if repo_stat is None:
-        return None, None
-    root_link_parts = repo_stat.github_repo_link.split('/')
-    if len(root_link_parts) < 5:
-        return None, None
-    return root_link_parts[3], root_link_parts[4]
-
-def get_project_repo_token(project):
-    repo_stat = project.repo_stats.first()
-    return repo_stat.github_token if repo_stat else None
-
-def get_repo_token(owner, repo):
-    repo_stat = ProjectRepoStats.objects.filter(github_repo_link__icontains=f'{owner}/{repo}').first()
-    return repo_stat.github_token if repo_stat else None
-
-def fetch_github_tree_with_sizes(owner, repo, branch='main'):
-    """
-    Fetches the recursive git tree from GitHub, keyed by path, including each
-    blob's size so callers can detect when a cached tree has gone stale.
-    """
-    headers = {"Accept": "application/vnd.github.v3+json"}
-    token = get_repo_token(owner, repo)
-    if token:
-        headers["Authorization"] = f"token {token}"
-
-    url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-    response = requests.get(url, headers=headers)
-
-    if response.status_code == 404 and branch == 'main':
-        branch = 'master'
-        url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-        response = requests.get(url, headers=headers)
-
-    if response.status_code != 200:
-        return {}, branch
-
-    raw_tree = response.json().get('tree', [])
-    tree_by_path = {
-        item['path']: {
-            'path': item['path'],
-            'type': 'dir' if item['type'] == 'tree' else 'file',
-            'size': item.get('size', 0),
-        }
-        for item in raw_tree
-    }
-    return tree_by_path, branch
-
-
-def get_project_tree_paths(project, branch='main'):
-    """
-    Returns the set of every file/folder path that exists in the project's
-    github repo, reading from the same redis cache used by github_proxy_view.
-    If the tree isn't cached yet, it's fetched from the GitHub API and cached.
-    """
-    repo_stat = project.repo_stats.first()
-    if repo_stat is None:
-        return set()
-    root_link_parts = repo_stat.github_repo_link.split('/')
-    if len(root_link_parts) < 5:
-        return set()
-    owner, repo = root_link_parts[3], root_link_parts[4]
-
-    cache_key = f"github_tree_recursive_{owner}_{repo}_{branch}"
-    tree = cache.get(cache_key)
-    if tree:
-        return {item['path'] for item in tree}
-
-    headers = {"Accept": "application/vnd.github.v3+json"}
-    if repo_stat.github_token:
-        headers["Authorization"] = f"token {repo_stat.github_token}"
-
-    url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-    response = requests.get(url, headers=headers)
-
-    if response.status_code == 404 and branch == 'main':
-        branch = 'master'
-        cache_key = f"github_tree_recursive_{owner}_{repo}_{branch}"
-        url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-        response = requests.get(url, headers=headers)
-
-    if response.status_code != 200:
-        return set()
-
-    raw_tree = response.json().get('tree', [])
-    formatted_tree = [{
-        'name': item['path'].split('/')[-1],
-        'path': item['path'],
-        'type': 'dir' if item['type'] == 'tree' else 'file'
-    } for item in raw_tree]
-    cache.set(cache_key, formatted_tree, timeout=3600)
-    return {item['path'] for item in formatted_tree}
-
-def _add_project_task(request,id):
-    try:
-        data = json.loads(request.body)
-        project = Project.objects.get(id=id)
-        if project is None:
-            return JsonResponse({'status':'Error','message':'Project does not exist'},status=404)
-        title = data.get('title')
-        description = data.get('description')
-        start_date = data.get('start_date')
-        end_date = data.get('end_date')
-        usernames = data.get('usernames', [])
-        resource_paths = data.get('resource_paths', [])
-
-        valid_users = []
-        for username in usernames:
-            target_user = User.objects.filter(username=username).first()
-            if target_user and UserProjectRole.objects.filter(project=project, user=target_user).exists():
-                valid_users.append(target_user)
-
-        valid_resource_paths = []
-        if resource_paths:
-            project_paths = get_project_tree_paths(project)
-            valid_resource_paths = [path for path in resource_paths if path in project_paths]
-
-        task = ProjectTask.objects.add_task_to_project(project,title,description,start_date,end_date)
-        if not task:
-            return JsonResponse({'status':'error','message':'Task could not be created'},status=500)
-        if valid_resource_paths:
-            TaskResourceAccess.objects.add_resources_to_task(task, valid_resource_paths)
-        if valid_users:
-            ProjectTaskParticipation.objects.add_task_participations(task, valid_users)
-
-        return JsonResponse({
-            'status': 'success',
-            'task_id': task.id,
-            'resource_paths': valid_resource_paths,
-            'affiliated_users': [u.username for u in valid_users]
-        }, status=200)
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status':'error','message':'Internal server error'},status=500)
-def _remove_project_tasks(request,id):
-    try:
-        project = Project.objects.get(id=id)
-        if project is None:
-            return JsonResponse({'status':'Error','message':'Project does not exist'},status=404)
-        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
-        if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
-            data = json.loads(request.body)
-            requirements = data.get('removedTasks', [])
-            if requirements is None or len(requirements) == 0:
-                return JsonResponse({'status': 'bad request',
-                                          'message': 'No tasks queued for removal'},
-                                          status=402)
-            deleted = ProjectTask.objects.remove_tasks_from_project(requirements)
-            return JsonResponse({'status':'succes' if deleted else 'error',
-                                 'message':'Tasks were successfully removed' if deleted else 'Tasks were not removed'},
-                                  status=200 if deleted else 500)
-        else:
-            return JsonResponse({'status': 'Unauthorized access'},status=403)
-    except Exception as e:
-        return JsonResponse({'status':'error','message':'Internal server error'},status=500)
 @login_required
 @csrf_protect
 @require_http_methods(["GET","POST","DELETE"])
@@ -696,32 +178,6 @@ def api_project_tasks(request,id):
             return _add_project_task(request,id)
         case "DELETE":
             return _remove_project_tasks(request,id)
-
-def _get_project_roles(request, id):
-    try:
-        project = Project.objects.get(id=id)
-        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
-
-        if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
-            project_roles = list(ProjectRole.objects.get_project_roles(project).values())
-
-            all_role_assignments = UserProjectRole.objects.filter(project=project).select_related('user')
-            users_by_role_id = {}
-            for entry in all_role_assignments:
-                users_by_role_id.setdefault(entry.role_id, []).append(entry.user.username)
-
-            for role_dict in project_roles:
-                role_dict['users'] = users_by_role_id.get(role_dict['id'], [])
-
-            return JsonResponse({'status': 'success', 'roles': project_roles}, status=200)
-        else:
-            return JsonResponse({'status': 'Unauthorized access'}, status=403)
-
-    except Project.DoesNotExist:
-        return JsonResponse({'status': 'Project not found'}, status=404)
-    except Exception as e:
-        print(f"Eroare in api_get_project_roles: {str(e)}")
-        return JsonResponse({'status': 'error'}, status=500)
 
 @login_required
 def filter_tree_by_path(request,tree, current_path):
@@ -758,24 +214,6 @@ def handle_file_content(request,owner, repo, path, branch='main'):
         cache.set(cache_key, r.json(), timeout=3600)
         return JsonResponse(r.json(), safe=False)
     return JsonResponse(r.json(), status=r.status_code, safe=False)
-def invalidate_repo_cache(repo:str,owner:str):
-    """
-    Invalidates every cached entry for a project's repo: the recursive tree
-    listings (for both 'main' and 'master') and every per-file/sub-folder
-    content cache, so a push is immediately reflected instead of serving
-    stale cached structure/content on the next request.
-    """
-    try:
-        for branch in ('main', 'master'):
-            cache.delete(f"github_tree_recursive_{owner}_{repo}_{branch}")
-            cache.delete(f"github_tree_with_size_{owner}_{repo}_{branch}")
-
-        stale_keys = list(cache.keys(f"github_file_{owner}_{repo}_*"))
-        stale_keys += list(cache.keys(f"file_content_{owner}_{repo}_*"))
-        if stale_keys:
-            cache.delete_many(stale_keys)
-    except Exception as e:
-        print(str(e))
 @login_required
 def github_proxy_view(request, owner, repo, path=""):
     #invalidate_repo_cache(repo,owner)
@@ -990,71 +428,6 @@ def api_get_availible_languages(request):
             return JsonResponse({'status': 'success', 'languages': languages, 'source': 'api'}, status=200)
     except Exception as e:
         return JsonResponse({'status':'error','message':str(e)},status=500)
-def is_repo_private(owner,repo):
-    try:
-        headers = {
-            "Accept": "application/vnd.github+json"
-        }
-        token = get_repo_token(owner, repo)
-        if token:
-            headers["Authorization"] = f"token {token}"
-        url = f"https://api.github.com/repos/{owner}/{repo}"
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-            return data['visibility'] == 'private'
-    except Exception as e:
-        print(str(e))
-def get_default_branch(owner,repo):
-    try:
-        headers = {
-            "Accept": "application/vnd.github+json"
-        }
-        token = get_repo_token(owner, repo)
-        if token:
-            headers["Authorization"] = f"token {token}"
-        url = f"https://api.github.com/repos/{owner}/{repo}"
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            return response.json().get('default_branch')
-        return None
-    except Exception as e:
-        print(str(e))
-        return None
-def get_branch_sha(owner,repo,branch_name):
-    try:
-        headers = {
-            "Accept": "application/vnd.github+json"
-        }
-        token = get_repo_token(owner, repo)
-        if token:
-            headers["Authorization"] = f"token {token}"
-        url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch_name}"
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            return response.json()['object']['sha']
-        return None
-    except Exception as e:
-        print(str(e))
-        return None
-def get_all_github_repo_branches(owner,repo):
-    try:
-        with transaction.atomic():
-            url = f'https://api.github.com/repos/{owner}/{repo}/branches'
-            headers = {}
-            token = get_repo_token(owner, repo)
-            if token:
-                headers["Authorization"] = f"token {token}"
-            meta_res = requests.get(url, headers=headers) if is_repo_private(owner,repo) else requests.get(url)
-            if meta_res.ok:
-                branches_json = meta_res.json()
-                branches = [br['name'] for br in branches_json]
-                return branches
-            else:
-                return []
-    except Exception as e:
-        print(str(e))
-        return []
 @login_required
 @csrf_exempt
 @require_GET
@@ -1167,47 +540,6 @@ def push_files(request):
     except Exception as e:
         print(str(e))
         return JsonResponse({'error':str(e)},status=500)
-
-def _add_project_role(request, id):
-    try:
-        project = get_object_or_404(Project, id=id)
-        user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
-        if UserProjectRole.objects.get_role_permissions(user_role, project)['can_change_project_settings']:
-            data = json.loads(request.body)
-            can_accept_invites = data.get('can_accept_invites', False)
-            can_invite_others = data.get('can_invite_others', False)
-            can_kick_others = data.get('can_kick_others', False)
-            can_change_roles = data.get('can_change_roles', False)
-            can_create_branches = data.get('can_create_branches', False)
-            can_merge_branches = data.get('can_merge_branches', False)
-            can_delete_branches = data.get('can_delete_branches', False)
-            can_add_tasks = data.get('can_add_tasks', False)
-            can_delete_tasks = data.get('can_delete_tasks', False)
-            can_modify_tasks = data.get('can_modify_tasks', False)
-            can_change_project_settings = data.get('can_change_project_settings', False)
-            if can_accept_invites and can_invite_others and can_kick_others and can_change_roles and can_create_branches and can_merge_branches and can_delete_branches and can_add_tasks and can_modify_tasks and can_delete_tasks and can_change_project_settings:
-                return JsonResponse({'error':'Cannot recreate the owner role'},status=403)
-            new_role = ProjectRole.objects.create(
-                name=data.get('name'),
-                can_accept_invites=can_accept_invites,
-                can_invite_others=can_invite_others,
-                can_kick_others=can_kick_others,
-                can_change_roles=can_change_roles,
-                can_create_branches=can_create_branches,
-                can_merge_branches=can_merge_branches,
-                can_delete_branches=can_delete_branches,
-                can_add_tasks=can_add_tasks,
-                can_delete_tasks=can_delete_tasks,
-                can_modify_tasks=can_modify_tasks,
-                can_change_project_settings=can_change_project_settings
-            )
-            return JsonResponse({'status': 'success', 'role_id': new_role.id}, status=200)
-        else:
-            return JsonResponse({'status': 'Unauthorized access'}, status=403)
-
-    except Exception as e:
-        print(f"Eroare in api_add_project_role: {str(e)}")
-        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
 
 @login_required
 @csrf_protect
@@ -1662,79 +994,6 @@ def api_handle_request_file_share(request):
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
-def add_new_branch_to_repo(project,new_branch_name=None):
-    try:
-        owner,repo = get_project_owner_repo(project)
-        if not all([owner,repo]):
-            return JsonResponse({'status': 'bad request',
-                                      'message': 'Internal server error'}, status=403)
-        new_sync_branch = new_branch_name
-        if new_branch_name is None:
-            now = str(datetime.now()).replace(' ', '__').replace(':', '-').replace('.', '')
-            new_sync_branch = f'Branch_created_w_Sentinel_Flow_at_{now}' if new_branch_name is None else new_branch_name
-        default_branch_name = get_default_branch(owner,repo)
-        master_branch_sha = get_branch_sha(owner,repo,default_branch_name)
-        headers = {"Accept": "application/vnd.github+json"}
-        token = get_project_repo_token(project)
-        if token:
-            headers["Authorization"] = f"token {token}"
-        data = {
-            "ref": f'refs/heads/{new_sync_branch}',
-            "sha": master_branch_sha
-        }
-        url = f"https://api.github.com/repos/{owner}/{repo}/git/refs"
-        response = requests.post(url,headers=headers,json=data)
-        if response.status_code != 201:
-            return JsonResponse({'status': 'bad request','message':response.json()},status=402)
-        return JsonResponse({'status':'success',
-                             'messaage':f'Succesfully added branch {new_sync_branch}'})
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error','message': 'Internal server error'},status=500)
-def modify_branch_from_repo(project,data):
-    try:
-        old_name = data.get('branch_name')
-        new_name = data.get('new_name')
-        if not old_name or not new_name:
-            return JsonResponse({'status':'bad request','message':'branch_name and new_name are required'},status=400)
-        owner,repo = get_project_owner_repo(project)
-        if not all([owner,repo]):
-            return JsonResponse({'status': 'bad request','message': 'Internal server error'}, status=403)
-        headers = {"Accept": "application/vnd.github+json"}
-        token = get_project_repo_token(project)
-        if token:
-            headers["Authorization"] = f"token {token}"
-        url = f"https://api.github.com/repos/{owner}/{repo}/branches/{old_name}/rename"
-        response = requests.post(url,headers=headers,json={"new_name":new_name})
-        if response.status_code != 201:
-            return JsonResponse({'status':'bad request','message':response.json()},status=402)
-        return JsonResponse({'status':'success','message':f'Branch {old_name} renamed to {new_name}'})
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
-def delete_branch_from_repo(project,data):
-    try:
-        branch_name = data.get('branch_name')
-        if not branch_name:
-            return JsonResponse({'status':'bad request','message':'branch_name is required'},status=400)
-        owner,repo = get_project_owner_repo(project)
-        if not all([owner,repo]):
-            return JsonResponse({'status': 'bad request','message': 'Internal server error'}, status=403)
-        default_branch_name = get_default_branch(owner,repo)
-        if branch_name == default_branch_name:
-            return JsonResponse({'status':'bad request','message':'Cannot delete the default branch'},status=400)
-        headers = {"Accept": "application/vnd.github+json"}
-        token = get_project_repo_token(project)
-        if token:
-            headers["Authorization"] = f"token {token}"
-        url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch_name}"
-        response = requests.delete(url,headers=headers)
-        if response.status_code != 204:
-            return JsonResponse({'status':'bad request','message':response.json() if response.content else 'Could not delete branch'},status=402)
-        return JsonResponse({'status':'success','message':f'Branch {branch_name} deleted'})
-    except Exception as e:
-        print(str(e))
-        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 @login_required
 @csrf_protect
 @require_http_methods(["POST","PUT","DELETE"])
@@ -1807,42 +1066,25 @@ def api_merge_github_branches(request,id):
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
-def verify_github_signature(payload_body, signature_header, secret):
-    """TODO raw scaffold: confirms this HTTP request really came from GitHub."""
-    if not signature_header or not signature_header.startswith('sha256='):
-        return False
-    expected = 'sha256=' + hmac.new(secret.encode('utf-8'), payload_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature_header)
-def commit_was_pushed_from_app(commit, secret):
-    """
-    TODO raw scaffold: looks for our HMAC trailer inside the commit message to
-    prove the commit content was produced by our backend (push_files), not a
-    direct git push / GitHub UI edit. Trailer format assumed: '\\n\\nX-GitSync-Sig: <hex>'
-    """
-    message = commit.get('message', '')
-    marker = 'X-GitSync-Sig:'
-    if marker not in message:
-        return False
-    body, _, tag = message.rpartition(marker)
-    tag = tag.strip()
-    expected_tag = hmac.new(secret.encode('utf-8'), body.strip().encode('utf-8'), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected_tag, tag)
 @csrf_exempt
 @require_POST
-def webhook_github(request):
+def webhook_github(request,id):
     try:
         signature_header = request.headers.get('X-Hub-Signature-256')
         payload = json.loads(request.body)
+        project = get_object_or_404(Project,id=id)
         repo_full_name = payload.get('repository', {}).get('full_name')  # "owner/repo"
         if not repo_full_name:
             return JsonResponse({'status': 'bad request', 'message': 'missing repository info'}, status=400)
+
+        all_repos = ProjectRepoStats.objects.get_project_repos(project)
+        if not repo_full_name in all_repos:
+            return JsonResponse({'status': 'bad request', 'message': 'given repository is not associated with the project'}, status=400)
 
         repo_stat = ProjectRepoStats.objects.filter(github_repo_link__icontains=repo_full_name).first()
         if repo_stat is None:
             return JsonResponse({'status': 'bad request', 'message': 'repo not tracked'}, status=404)
 
-        # TODO: a repo could theoretically be linked to more than one project (n-to-n) -
-        # decide how to handle that case instead of just taking the first one
         project = repo_stat.projects.first()
         if project is None:
             return JsonResponse({'status': 'bad request', 'message': 'repo not linked to any project'}, status=404)
