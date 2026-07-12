@@ -11,7 +11,6 @@ from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Max
 from django.http import JsonResponse
-from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.views.decorators.http import require_http_methods, require_POST, require_GET
 from django_ratelimit.decorators import ratelimit
@@ -87,7 +86,9 @@ def open_project_page(request,name):
 @require_GET
 @ratelimit(key='user',rate='120/m',block=True)
 def open_project_members_page(request,name):
-    project = get_object_or_404(Project, name=name)
+    project = Project.objects.filter(name=name).first()
+    if project is None:
+        return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
     result = UserProjectRole.objects.get_all_users_in_project(project)
     members_serialized = {
         role_name: [{'id': u.id, 'username': u.username} for u in users]
@@ -101,7 +102,9 @@ def open_project_members_page(request,name):
 @require_GET
 @ratelimit(key='user',rate='60/m',block=True)
 def open_project_settings(request, name):
-    project = get_object_or_404(Project, name=name)
+    project = Project.objects.filter(name=name).first()
+    if project is None:
+        return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
     user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
     permissions = UserProjectRole.objects.get_role_permissions(user_role, project)
 
@@ -457,7 +460,9 @@ def api_github_get_all_repo_branches(request):
             return JsonResponse({'status':'bad request',
                                       'message':'project name is required'},
                                        status=403)
-        project = get_object_or_404(Project, name=project_name)
+        project = Project.objects.filter(name=project_name).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         repo_stat = project.repo_stats.filter(id=repo_id).first() if repo_id else project.repo_stats.first()
         if repo_stat is None:
             return JsonResponse({'status':'bad request',
@@ -508,7 +513,9 @@ def push_files(request):
                     'locked_files': locked_by_others
                 }, status=423)
         message = f'[Pushed via GitSync]:{default_msg}'
-        project_obj = get_object_or_404(Project, id=project)
+        project_obj = Project.objects.filter(id=project).first()
+        if project_obj is None:
+            return JsonResponse({'error': 'Project not found'}, status=404)
 
         headers = {"Accept": "application/vnd.github.v3+json"}
         token = get_repo_token(owner, repo)
@@ -576,7 +583,9 @@ def api_project_roles(request, id):
 @ratelimit(key='user',rate='20/m',block=True)
 def api_assign_users_to_role(request, id):
     try:
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
 
         if UserProjectRole.objects.get_role_permissions(user_role, project)['can_change_project_settings']:
@@ -584,7 +593,14 @@ def api_assign_users_to_role(request, id):
             role_id = data.get('role_id')
             usernames = data.get('usernames', [])
 
-            target_role = get_object_or_404(ProjectRole, id=role_id, project=project)
+            # NOTE: ProjectRole has no `project` field (roles are a shared,
+            # global registry by name, not scoped per project) - the previous
+            # get_object_or_404(ProjectRole, id=role_id, project=project) call
+            # always raised a FieldError, which made this endpoint 500 on
+            # every request. Looking up by id only actually works.
+            target_role = ProjectRole.objects.filter(id=role_id).first()
+            if target_role is None:
+                return JsonResponse({'status': 'error', 'message': 'Role not found'}, status=404)
 
             assigned_users = []
 
@@ -616,7 +632,9 @@ def api_assign_users_to_role(request, id):
 @ratelimit(key='user',rate='20/m',block=True)
 def api_share_file_access(request, name):
     try:
-        project = get_object_or_404(Project, name=name)
+        project = Project.objects.filter(name=name).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         project_owner = project.owner
         user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
 
@@ -659,7 +677,11 @@ def api_share_file_access(request, name):
 @ratelimit(key='user',rate='20/m',block=True)
 def api_request_project_join(request, project_id):
     try:
-        project = get_object_or_404(Project, id=project_id)
+        # .get() (not get_object_or_404) so the existing
+        # `except Project.DoesNotExist` below actually fires - it never did
+        # while this used get_object_or_404, which raises Http404 instead
+        # and fell through to the generic except as an unintended 500.
+        project = Project.objects.get(id=project_id)
 
         if UserProjectRole.objects.get_user_role_in_project(project, request.user) != 'visitor':
             return JsonResponse({'status': 'error', 'message': 'Already member of this project.'}, status=400)
@@ -715,18 +737,21 @@ def api_handle_project_join_request(request):
         if not all([action, sender_id, receiver_id]):
             return JsonResponse({'status': 'error', 'message': 'Missing parameters'}, status=400)
 
-        user_req = get_object_or_404(
-            UserRequest,
+        user_req = UserRequest.objects.filter(
             sender_id=sender_id,
             receiver_id=receiver_id,
             request_type='project',
             status='pending'
-        )
+        ).first()
+        if user_req is None:
+            return JsonResponse({'status': 'error', 'message': 'Request not found'}, status=404)
 
         if not user_req.target:
             return JsonResponse({'status': 'error', 'message': 'No project associated with this request'}, status=400)
         project_id = user_req.target.strip("'\"")
-        project = get_object_or_404(Project, id=int(project_id))
+        project = Project.objects.filter(id=int(project_id)).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
 
         if UserProjectRole.objects.get_user_role_in_project(project, user_req.sender) != 'visitor':
             user_req.status = 'accepted'
@@ -778,7 +803,9 @@ def api_handle_project_join_request(request):
 @ratelimit(key='user',rate='20/m',block=True)
 def api_invite_to_project(request, id):
     try:
-        project = get_object_or_404(Project, id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         permissions = UserProjectRole.objects.get_role_permissions(role, project)
         if not permissions['can_invite_others']:
@@ -891,7 +918,9 @@ def api_leave_project(request, id):
     project or invite someone first) rather than leaving it ownerless.
     """
     try:
-        project = get_object_or_404(Project, id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if role == 'visitor':
             return JsonResponse({'status': 'error', 'message': 'You are not a member of this project'}, status=403)
@@ -937,7 +966,9 @@ def api_request_file_access(request, project_id):
         if not filepath:
             return JsonResponse({'status': 'error', 'message': 'Calea fișierului lipsește.'}, status=400)
 
-        project = get_object_or_404(Project, id=project_id)
+        project = Project.objects.filter(id=project_id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
 
         # 1. Găsim adminii proiectului care pot aproba cererea
         # Adaptează interogarea în funcție de cum e definit rolul de admin la tine
@@ -981,13 +1012,14 @@ def api_handle_file_access_request(request):
         if not all([response, sender_id, receiver_id]):
             return JsonResponse({'status': 'error', 'message': 'Missing parameters in request.'}, status=400)
 
-        user_req = get_object_or_404(
-            UserRequest,
+        user_req = UserRequest.objects.filter(
             sender_id=sender_id,
             receiver_id=receiver_id,
             request_type='file_access',
             status='pending'
-        )
+        ).first()
+        if user_req is None:
+            return JsonResponse({'status': 'error', 'message': 'Request not found'}, status=404)
 
         is_accepted = str(response).lower() in ('accept', 'accepted', 'true', '1', 'yes')
 
@@ -1066,7 +1098,9 @@ def api_request_file_share(request):
                 'status': 'Bad request',
                 'message': 'User did not add a file to the request'
             }, status='402')
-        project = get_object_or_404(Project,name=project_name)
+        project = Project.objects.filter(name=project_name).first()
+        if project is None:
+            return JsonResponse({'status': 'Bad request', 'message': 'Project not found'}, status=404)
 
         project_files = get_project_tree_paths(project,'main')
         # de facut branch-uri si cacheuit cumva asta....
@@ -1176,7 +1210,9 @@ def api_handle_request_file_share(request):
 @ratelimit(key='user',rate='15/m',block=True)
 def api_github_handle_branch_action(request,id):
     method = request.method
-    project = get_object_or_404(Project,id=id)
+    project = Project.objects.filter(id=id).first()
+    if project is None:
+        return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
     user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
     visitor_permissions = UserProjectRole.objects.get_role_permissions(user_role, project)
     match method:
@@ -1202,7 +1238,9 @@ def api_github_handle_branch_action(request,id):
 @ratelimit(key='user',rate='15/m',block=True)
 def api_merge_github_branches(request,id):
     try:
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         owner,repo = get_project_owner_repo(project)
         user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         visitor_permissions = UserProjectRole.objects.get_role_permissions(user_role, project)
@@ -1250,7 +1288,9 @@ def webhook_github(request,id):
     try:
         signature_header = request.headers.get('X-Hub-Signature-256')
         payload = json.loads(request.body)
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         repo_full_name = payload.get('repository', {}).get('full_name')  # "owner/repo"
         if not repo_full_name:
             return JsonResponse({'status': 'bad request', 'message': 'missing repository info'}, status=400)

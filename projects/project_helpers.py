@@ -2,7 +2,6 @@ import json
 import django.db
 from django.db import transaction
 from django.http import JsonResponse
-from django.shortcuts import get_object_or_404
 from projects.github_utils import get_project_tree_paths
 from projects.models import Project, UserProjectRole, ProjectDomain, ProjectSkillRequirement, \
     ProjectRequirementSection, ProjectTask, ProjectRole, TaskResourceAccess, ProjectTaskParticipation
@@ -30,14 +29,18 @@ def get_user_file_permissions(user,project):
         return {}
 def _get_project_domains(request,id):
     try:
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         domains = ProjectDomain.objects.filter(project_id=project.id)
         return JsonResponse({'status':'success','domains':list(domains.values())})
     except django.db.DatabaseError:
         return JsonResponse({'status': 'error', 'code': 500})
 def _add_project_domains(request,id):
     try:
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
         if UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
             data = json.loads(request.body)
@@ -53,7 +56,9 @@ def _add_project_domains(request,id):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 def _delete_project_domains(request,id):
     try:
-            project = get_object_or_404(Project, id=id)
+            project = Project.objects.filter(id=id).first()
+            if project is None:
+                return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
             role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
             if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
                 data = json.loads(request.body)
@@ -72,7 +77,9 @@ def _delete_project_domains(request,id):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 def _get_project_requirements(request,id):
     try:
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         succes = ProjectSkillRequirement.objects.get_requirements_grouped_by_sections(project)
         return JsonResponse({'status':'succes','requirements':succes})
     except Exception as e:
@@ -81,7 +88,9 @@ def _get_project_requirements(request,id):
 def _add_project_requirements(request,id):
     try:
         with transaction.atomic():
-            project = get_object_or_404(Project, id=id)
+            project = Project.objects.filter(id=id).first()
+            if project is None:
+                return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
             role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
             if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
                 data = json.loads(request.body)
@@ -111,7 +120,9 @@ def _add_project_requirements(request,id):
 def _remove_project_requirements(request,id):
     try:
         with transaction.atomic():
-            project = get_object_or_404(Project, id=id)
+            project = Project.objects.filter(id=id).first()
+            if project is None:
+                return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
             role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
             if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
                 data = json.loads(request.body)
@@ -139,7 +150,9 @@ def _remove_project_requirements(request,id):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 def _remove_project_sections(request,id):
     try:
-        project = get_object_or_404(Project, id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             data = json.loads(request.body)
@@ -157,7 +170,9 @@ def _remove_project_sections(request,id):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
 def _add_project_sections(request,id):
     try:
-        project = get_object_or_404(Project, id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             data = json.loads(request.body)
@@ -175,7 +190,9 @@ def _add_project_sections(request,id):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 def _get_project_tasks(request,id):
     try:
-        project = get_object_or_404(Project, id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(role, project)['can_change_project_settings']:
             tasks = list(ProjectTask.objects.get_project_tasks(project).values())
@@ -281,7 +298,9 @@ def _get_project_roles(request, id):
         return JsonResponse({'status': 'error'}, status=500)
 def _add_project_role(request, id):
     try:
-        project = get_object_or_404(Project, id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         user_role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if UserProjectRole.objects.get_role_permissions(user_role, project)['can_change_project_settings']:
             data = json.loads(request.body)

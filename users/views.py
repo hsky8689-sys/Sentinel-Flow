@@ -4,7 +4,6 @@ from django.contrib.auth import authenticate, login
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.http import JsonResponse
-from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_http_methods, require_GET, require_POST
 from django_ratelimit.decorators import ratelimit
@@ -77,7 +76,9 @@ def signup_page(request):
 @require_GET
 @ratelimit(key='user', rate='120/m', block=True)
 def acces_profile(request,username):
-    user = get_object_or_404(User,username=username)
+    user = User.objects.filter(username=username).first()
+    if user is None:
+        return JsonResponse({'status': 'error', 'message': 'User not found'}, status=404)
     profile_stats = {
         "profile_sections":[],
         "teckstack_category":{},

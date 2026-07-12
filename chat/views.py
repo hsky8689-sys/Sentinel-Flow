@@ -3,8 +3,7 @@ import json
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.contrib.auth.decorators import login_required
-from django.shortcuts import get_object_or_404
-from django.http import Http404, JsonResponse
+from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods, require_GET
 from django_ratelimit.decorators import ratelimit
 from chat.models import Conversation
@@ -181,7 +180,9 @@ def chat_message_api(request):
 
 def _get_project_conversations(request,project_id):
     try:
-        project = get_object_or_404(Project, id=project_id)
+        project = Project.objects.filter(id=project_id).first()
+        if project is None:
+            return JsonResponse({'error': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if role == 'visitor':
             return JsonResponse({'error': 'You are not a member of this project'}, status=403)
@@ -209,8 +210,6 @@ def _get_project_conversations(request,project_id):
             'message': f'Page with index {page_nr} was retrieved',
             'content': serialized_conversations
         }, status=200)
-    except Http404:
-        return JsonResponse({'error': 'Project not found'}, status=404)
     except ValueError:
         return JsonResponse({'error': 'Parameters must be integers'}, status=400)
     except Exception as e:
@@ -218,7 +217,9 @@ def _get_project_conversations(request,project_id):
 
 def _add_project_conversation(request,project_id):
     try:
-        project = get_object_or_404(Project, id=project_id)
+        project = Project.objects.filter(id=project_id).first()
+        if project is None:
+            return JsonResponse({'error': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if role == 'visitor':
             return JsonResponse({'error': 'You are not a member of this project'}, status=403)
@@ -238,8 +239,6 @@ def _add_project_conversation(request,project_id):
             'conversation_id': conversation_id,
             'members': list(valid_member_ids)
         }, status=200)
-    except Http404:
-        return JsonResponse({'error': 'Project not found'}, status=404)
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
     except Exception as e:
@@ -247,7 +246,9 @@ def _add_project_conversation(request,project_id):
 
 def _delete_project_conversation(request,project_id):
     try:
-        project = get_object_or_404(Project, id=project_id)
+        project = Project.objects.filter(id=project_id).first()
+        if project is None:
+            return JsonResponse({'error': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
         if role == 'visitor':
             return JsonResponse({'error': 'You are not a member of this project'}, status=403)
@@ -261,8 +262,6 @@ def _delete_project_conversation(request,project_id):
         if not deleted:
             return JsonResponse({'error': 'Conversation not found for this project'}, status=404)
         return JsonResponse({'success': True, 'message': 'Conversation deleted'}, status=200)
-    except Http404:
-        return JsonResponse({'error': 'Project not found'}, status=404)
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
     except Exception as e:

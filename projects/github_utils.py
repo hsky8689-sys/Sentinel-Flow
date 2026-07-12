@@ -6,7 +6,6 @@ from datetime import datetime
 import requests
 from django.db import transaction
 from django.http import JsonResponse
-from django.shortcuts import get_object_or_404
 
 from devnetwork import settings
 from devnetwork.caching import cache_manager, ProjectCacheKey
@@ -180,7 +179,9 @@ def get_project_repo_summaries(project):
     return repos
 def _add_project_repository(request,id):
     try:
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
         if not UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
             return JsonResponse({'status':'Unauthorized access'},status=403)
@@ -213,7 +214,9 @@ def _add_project_repository(request,id):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
 def _delete_project_repository(request,id):
     try:
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
         if not UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
             return JsonResponse({'status':'Unauthorized access'},status=403)
@@ -234,7 +237,9 @@ def _delete_project_repository(request,id):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
 def _get_project_push_policy(request,id):
     try:
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         return JsonResponse({
             'status': 'success',
             'can_only_modify_from_app': project.can_only_modify_from_app,
@@ -245,7 +250,9 @@ def _get_project_push_policy(request,id):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 def _set_project_push_policy(request,id):
     try:
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
         if not UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
             return JsonResponse({'status':'Unauthorized access'},status=403)
@@ -276,7 +283,9 @@ def _set_project_push_policy(request,id):
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 def _clear_flagged_external_push(request,id):
     try:
-        project = get_object_or_404(Project,id=id)
+        project = Project.objects.filter(id=id).first()
+        if project is None:
+            return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project,request.user)
         if not UserProjectRole.objects.get_role_permissions(role,project)['can_change_project_settings']:
             return JsonResponse({'status':'Unauthorized access'},status=403)

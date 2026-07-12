@@ -544,30 +544,38 @@ class ProfileAccessTests(TestCase):
     # ---- profile of a username that isn't a live account ----
 
     def test_profile_for_never_registered_username_returns_404_not_500(self):
+        """
+        Also asserts the body is valid JSON, not Django's default HTML 404
+        page - a React client calling response.json() on an HTML body would
+        get a parse error instead of a usable {status, message}. Checking
+        only status_code here would have missed exactly that bug: it's still
+        404 either way, only the body's content-type differs.
+        """
         self.client.force_login(self.viewer)
         response = self.client.get(self._profile_url('this_username_was_never_registered'))
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()['status'], 'error')
 
     def test_profile_for_deleted_user_returns_404_not_500(self):
         """
         A competitor's account removed from the app (row actually deleted,
-        not just deactivated) must produce a clean 404 - acces_profile relies
-        on get_object_or_404, so a stale profile link/bookmark to a since-
-        deleted account should never 500.
+        not just deactivated) must produce a clean, JSON 404 - a stale
+        profile link/bookmark to a since-deleted account should never 500,
+        and never fall back to Django's default (HTML) 404 page either.
         """
         deleted_username = self.stranger.username
         self.stranger.delete()
         self.client.force_login(self.viewer)
         response = self.client.get(self._profile_url(deleted_username))
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()['status'], 'error')
 
     def test_profile_for_deactivated_but_undeleted_user_is_still_reachable(self):
         """
         Documents current behavior rather than asserting a requirement:
-        acces_profile only calls get_object_or_404, it never checks
-        is_active - a deactivated/banned account's row still exists, so its
-        profile stays viewable by others even though that account itself can
-        no longer log in.
+        acces_profile never checks is_active - a deactivated/banned
+        account's row still exists, so its profile stays viewable by others
+        even though that account itself can no longer log in.
         """
         self.stranger.is_active = False
         self.stranger.save(update_fields=['is_active'])
