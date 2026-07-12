@@ -1,5 +1,6 @@
 import re
 import django.db
+from django.contrib.auth.password_validation import validate_password
 from django.core.validators import validate_slug
 from django.db.models import Q
 from django.db import models,transaction
@@ -14,7 +15,15 @@ class CustomUserManager(BaseUserManager):
         try:
             with transaction.atomic():
                 user = self.model(username=username, email=email, birthday=birthday)
+                # validate_password checks the plaintext against
+                # AUTH_PASSWORD_VALIDATORS (length, common-password, etc.) -
+                # must run before set_password() hashes it away. full_clean()
+                # enforces every field validator (validate_slug on username,
+                # etc.) plus uniqueness - must run after set_password() so it
+                # doesn't reject the still-blank password field.
+                validate_password(password, user)
                 user.set_password(password)
+                user.full_clean()
                 user.save(using=self._db)
                 UserProfileSection.objects.create_default_user_sections(user.id)
                 UserTechnicalSkillSection.objects.create_user_default_techstack(user.id)
@@ -469,7 +478,7 @@ class UserRequest(models.Model):
     timestamp = models.DateTimeField(default=timezone.now,db_index=True)
     request_type = models.CharField(
         max_length=20,
-        choices=[('friend', 'friend'), ('project', 'project'), ('file_access', 'file_access'), ('move_file_access', 'move_file_access')]
+        choices=[('friend', 'friend'), ('project', 'project'), ('project_invite', 'project_invite'), ('file_access', 'file_access'), ('move_file_access', 'move_file_access')]
     )
     target = models.CharField(max_length=255, null=True, blank=True, db_index=True,default=None)
     status = models.CharField(
@@ -481,7 +490,7 @@ class UserRequest(models.Model):
         db_table = 'requests'
         constraints = [
             models.CheckConstraint(
-                condition=Q(request_type__in=['friend','project','file_access','move_file_access']),
+                condition=Q(request_type__in=['friend','project','project_invite','file_access','move_file_access']),
                 name='check_valid_request_type',
             ),
             models.CheckConstraint(

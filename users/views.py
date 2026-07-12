@@ -1,14 +1,12 @@
 import json
 
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import authenticate, login
 from django.contrib.auth.decorators import login_required
+from django.db import transaction
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_http_methods
-from django.views.decorators.csrf import csrf_exempt, csrf_protect
+from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_http_methods, require_GET, require_POST
-from django.db import transaction
 from django_ratelimit.decorators import ratelimit
 
 from projects.models import Project
@@ -46,10 +44,15 @@ def search_api(request):
 @ratelimit(key='ip', rate='10/m', method='POST',block=True)
 def signup_page(request):
     if request.method == 'POST':
-        username = request.POST['username']
-        email = request.POST['email']
-        password = request.POST['password']
-        birthday = request.POST['birthday']
+        username = request.POST.get('username')
+        email = request.POST.get('email')
+        password = request.POST.get('password')
+        birthday = request.POST.get('birthday')
+        if not all([username, email, password, birthday]):
+            return JsonResponse({
+                'status': 'error',
+                'message': 'username, email, password and birthday are all required'
+            }, status=400)
         user = User.objects.create_user(
             username=username,
             email=email,
@@ -141,12 +144,12 @@ def inbox_page(request):
     pass
 @require_http_methods(["POST","GET"])
 @ratelimit(key='ip',rate='10/m',method='POST',block=True)
-@ratelimit(key='post:username',rate='5/m',method='POST',block=True)
+@ratelimit(key='post:username',rate='20/m',method='POST',block=True)
 @ratelimit(key='user_or_ip',rate='20/m',method='GET',block=True)
 def login_page(request):
     if request.method == "POST":
         if request.user.is_authenticated:
-            logout(request)
+            return JsonResponse({'status':'bad request','message':'You are already logged in'},status=400)
         username = request.POST['username']
         password = request.POST['password']
         user = authenticate(request,username=username,password=password)
@@ -160,7 +163,7 @@ def login_page(request):
             return JsonResponse({'status': 'error', 'message': 'Date incorecte'}, status=401)
     else:
         if request.user.is_authenticated:
-            logout(request)
+           return JsonResponse({'status':'bad request','message':'You are already logged in'},status=400)
         return JsonResponse({'status': 'ready'})
 @login_required
 @csrf_protect

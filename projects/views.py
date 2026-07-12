@@ -28,7 +28,8 @@ from projects.project_helpers import get_user_file_permissions, _get_project_dom
     _remove_project_sections, _add_project_sections, _get_project_tasks, _add_project_task, _remove_project_tasks, \
     _get_project_roles, _add_project_role
 from projects.models import Project, UserProjectRole, ProjectDomain, \
-    ProjectTask, ProjectRole, ResourceAccess, TaskResourceAccess, ProjectTaskParticipation, ProjectRepoStats
+    ProjectTask, ProjectRole, ResourceAccess, TaskResourceAccess, ProjectTaskParticipation, ProjectRepoStats, \
+    AuditLogAction
 from users.models import User, UserRequest
 
 @login_required
@@ -549,6 +550,7 @@ def push_files(request):
                 errors.append({'path':path,'error': put_res.json()})
 
         invalidate_repo_cache(repo, owner, branch)
+        AuditLogAction.objects.log_action(project_obj, request.user, 'push')
         if errors:
             return JsonResponse({'status': 'partial_error', 'errors': errors}, status=400)
         return JsonResponse({'status': 'success'})
@@ -771,7 +773,162 @@ def api_handle_project_join_request(request):
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
 @login_required
+@csrf_protect
 @require_POST
+@ratelimit(key='user',rate='20/m',block=True)
+def api_invite_to_project(request, id):
+    try:
+        project = get_object_or_404(Project, id=id)
+        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+        permissions = UserProjectRole.objects.get_role_permissions(role, project)
+        if not permissions['can_invite_others']:
+            return JsonResponse({'status': 'error', 'message': 'You do not have permission to invite others'}, status=403)
+
+        data = json.loads(request.body)
+        target_username = data.get('username')
+        if not target_username:
+            return JsonResponse({'status': 'error', 'message': 'username is required'}, status=400)
+
+        target_user = User.objects.filter(username=target_username).first()
+        if target_user is None:
+            return JsonResponse({'status': 'error', 'message': 'User not found'}, status=404)
+        if target_user.id == request.user.id:
+            return JsonResponse({'status': 'error', 'message': 'You cannot invite yourself'}, status=400)
+
+        target_role = UserProjectRole.objects.get_user_role_in_project(project, target_user)
+        if target_role != 'visitor':
+            return JsonResponse({'status': 'error', 'message': 'User is already a member of this project'}, status=400)
+
+        pending_exists = UserRequest.objects.filter(
+            sender=request.user,
+            receiver=target_user,
+            request_type='project_invite',
+            target=str(project.id),
+            status='pending'
+        ).exists()
+        if pending_exists:
+            return JsonResponse({'status': 'error', 'message': 'An invite is already pending for this user'}, status=400)
+
+        invite = UserRequest.objects.create(
+            sender=request.user,
+            receiver=target_user,
+            request_type='project_invite',
+            target=str(project.id),
+            status='pending'
+        )
+        return JsonResponse({'status': 'success', 'message': f'Invite sent to {target_user.username}', 'invite_id': invite.id}, status=201)
+    except json.JSONDecodeError:
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON'}, status=400)
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
+
+@login_required
+@csrf_protect
+@require_http_methods(["PATCH","DELETE"])
+@ratelimit(key='user',rate='20/m',block=True)
+def api_handle_project_invite(request, invite_id):
+    user = request.user
+    try:
+        invite = UserRequest.objects.filter(id=invite_id, request_type='project_invite').first()
+        if invite is None:
+            return JsonResponse({'status': 'error', 'message': 'Invite not found'}, status=404)
+        if invite.receiver_id != request.user.id:
+            return JsonResponse({'status': 'error', 'message': 'Only the invited user can respond to this invite'}, status=403)
+        if invite.status != 'pending':
+            return JsonResponse({'status': 'error', 'message': 'Invite has already been handled'}, status=400)
+
+        project = Project.objects.filter(id=int(invite.target)).first()
+        if project is None:
+            invite.status = 'declined'
+            invite.save(update_fields=['status'])
+            return JsonResponse({'status': 'error', 'message': 'Project no longer exists'}, status=404)
+
+        match request.method:
+            case "PATCH":
+                data = json.loads(request.body or '{}')
+                role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+                permissions = UserProjectRole.objects.get_role_permissions(role, project)
+                if not permissions['can_invite_others']:
+                    return JsonResponse({'status': 'error', 'message': 'You do not have permission to either invite others or handle incoming requests'},
+                                        status=403)
+                if data.get('status') != 'accepted':
+                    return JsonResponse({'status': 'error', 'message': 'Unsupported status transition'}, status=400)
+                with transaction.atomic():
+                    UserProjectRole.objects.create(
+                        user=invite.receiver,
+                        project=project,
+                        role=ProjectRole.objects.get(name='newbie')
+                    )
+                    invite.status = 'accepted'
+                    invite.save(update_fields=['status'])
+                cache_manager.delete(UserCacheKey.PROJECTS.format(user_id=invite.receiver_id))
+                cache_manager.delete(ProjectCacheKey.USER_ROLE.format(project_id=project.id, user_id=invite.receiver_id))
+                return JsonResponse({'status': 'success', 'message': 'Invite accepted'}, status=200)
+            case "DELETE":
+                invite.status = 'declined'
+                invite.save(update_fields=['status'])
+                return JsonResponse({'status': 'success', 'message': 'Invite declined'}, status=200)
+    except json.JSONDecodeError:
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON'}, status=400)
+    except ProjectRole.DoesNotExist:
+        return JsonResponse({'status': 'error', 'message': 'Role "newbie" not found'}, status=500)
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
+
+@login_required
+@csrf_protect
+@require_http_methods(["DELETE"])
+@ratelimit(key='user',rate='20/m',block=True)
+def api_leave_project(request, id):
+    """
+    A member leaves a project. If they were the owner, ownership is handed to
+    another remaining member automatically - whoever has the most logged
+    'push' activity in this project (AuditLogAction), falling back to the
+    longest-standing remaining member if nobody has pushed yet. If the owner
+    is the only member left, the leave is refused outright (delete the
+    project or invite someone first) rather than leaving it ownerless.
+    """
+    try:
+        project = get_object_or_404(Project, id=id)
+        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+        if role == 'visitor':
+            return JsonResponse({'status': 'error', 'message': 'You are not a member of this project'}, status=403)
+
+        with transaction.atomic():
+            if role == 'owner':
+                other_members = UserProjectRole.objects.filter(project=project).exclude(user=request.user)
+                if not other_members.exists():
+                    return JsonResponse({
+                        'status': 'error',
+                        'message': 'You are the only member left - delete the project or invite someone before leaving'
+                    }, status=400)
+
+                successor_user_id = AuditLogAction.objects.get_most_active_user_id(
+                    project, action_type='push', exclude_user_ids=[request.user.id]
+                )
+                if successor_user_id is None:
+                    successor_user_id = other_members.order_by('id').first().user_id
+
+                owner_role = ProjectRole.objects.get(name='owner')
+                UserProjectRole.objects.filter(project=project, user_id=successor_user_id).update(role=owner_role)
+                cache_manager.delete(ProjectCacheKey.USER_ROLE.format(project_id=project.id, user_id=successor_user_id))
+
+            UserProjectRole.objects.filter(project=project, user=request.user).delete()
+
+        cache_manager.delete(ProjectCacheKey.USER_ROLE.format(project_id=project.id, user_id=request.user.id))
+        cache_manager.delete(UserCacheKey.PROJECTS.format(user_id=request.user.id))
+        return JsonResponse({'status': 'success', 'message': 'You have left the project'}, status=200)
+    except ProjectRole.DoesNotExist:
+        return JsonResponse({'status': 'error', 'message': 'Role "owner" not found'}, status=500)
+    except Exception as e:
+        print(str(e))
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
+
+@login_required
+@require_POST
+@ratelimit(key='user',rate='20/m',block=True)
 def api_request_file_access(request, project_id):
     try:
         data = json.loads(request.body)

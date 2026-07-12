@@ -7,7 +7,7 @@ import django.db
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_slug
 from django.db import models, transaction
-from django.db.models import QuerySet
+from django.db.models import QuerySet, Count
 
 from devnetwork.caching import cache_manager, UserCacheKey, ProjectCacheKey
 from users.models import User
@@ -682,3 +682,35 @@ class TaskResourceAccess(models.Model):
     class Meta:
         db_table = 'task_resource_accesses'
         unique_together = ('task', 'resource_path')
+
+
+class AuditLogActionManager(models.Manager):
+    def log_action(self, project, user, action_type):
+        return self.create(project=project, user=user, action_type=action_type)
+
+    def get_most_active_user_id(self, project, action_type='push', exclude_user_ids=None):
+        """
+        Returns the id of the user with the most logged actions of the given
+        type in this project (excluding anyone in exclude_user_ids), or None
+        if nobody has any logged actions yet.
+        """
+        qs = self.filter(project=project, action_type=action_type)
+        if exclude_user_ids:
+            qs = qs.exclude(user_id__in=exclude_user_ids)
+        top = qs.values('user_id').annotate(total=Count('id')).order_by('-total').first()
+        return top['user_id'] if top else None
+
+
+class AuditLogAction(models.Model):
+    ACTION_CHOICES = [
+        ('push', 'push'),
+    ]
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='audit_logs')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='audit_logs')
+    action_type = models.CharField(max_length=30, choices=ACTION_CHOICES)
+    timestamp = models.DateTimeField(default=timezone.now, db_index=True)
+    objects = AuditLogActionManager()
+
+    class Meta:
+        db_table = 'audit_log_actions'
+        indexes = [models.Index(fields=['project', 'action_type'])]

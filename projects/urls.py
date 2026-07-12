@@ -7,7 +7,8 @@ from projects.views import open_project_page, open_project_members_page, open_pr
     api_get_availible_languages, api_request_project_join, api_handle_project_join_request, request_file_open, \
     api_handle_file_access_request, api_request_file_share, api_handle_request_file_share, \
     api_github_get_all_repo_branches, api_github_handle_branch_action, api_merge_github_branches, webhook_github, \
-    api_handle_project_repositories, api_project_push_policy
+    api_handle_project_repositories, api_project_push_policy, \
+    api_invite_to_project, api_handle_project_invite, api_leave_project
 
 app_name = 'projects'
 
@@ -31,6 +32,9 @@ urlpatterns = [
     path('get-available-languages',api_get_availible_languages,name="view-selected-languages"),
     path('api/<int:project_id>/request-join',api_request_project_join,name='send-project-join-request'),
     path('api/requests/project/handle/',api_handle_project_join_request,name='handle-project-join-request'),
+    path('settings/<int:id>/invitation/',api_invite_to_project,name='invite-to-project'),
+    path('invites/<int:invite_id>/',api_handle_project_invite,name='handle-project-invite'),
+    path('settings/<int:id>/project-exit/',api_leave_project,name='leave-project'),
     path('api/requests/file-access/handle/',api_handle_file_access_request,name='handle-file-access-request'),
     path('api/requests/file-writers/',api_request_file_share,name='request-file-share'),
     path('api/requests/file-writers/handle',api_handle_request_file_share,name='handle-request-file-share'),
