@@ -32,20 +32,44 @@ class CacheManager(ABC):
 
 
 class RedisCacheManager(CacheManager):
-    """Current backend: django-redis on top of Django's cache framework."""
+    """
+    Current backend: django-redis on top of Django's cache framework.
+
+    The cache is an optimization, not a source of truth - if Redis is down or
+    unreachable, every method here swallows the failure and degrades to "no
+    cache" instead of taking the request down with it: get() returns `default`
+    (so callers fall through to querying the DB, same as a cache miss), and the
+    write methods (set/delete/delete_many/delete_pattern) just no-op.
+    """
     def get(self, key, default=None):
-        return django_cache.get(key, default)
+        try:
+            return django_cache.get(key, default)
+        except Exception as e:
+            print(f"CacheManager.get failed, falling back to no-cache: {e}")
+            return default
     def set(self, key, value, timeout=None):
-        django_cache.set(key, value, timeout=timeout)
+        try:
+            django_cache.set(key, value, timeout=timeout)
+        except Exception as e:
+            print(f"CacheManager.set failed, skipping cache write: {e}")
     def delete(self, key):
-        django_cache.delete(key)
+        try:
+            django_cache.delete(key)
+        except Exception as e:
+            print(f"CacheManager.delete failed, skipping cache invalidation: {e}")
     def delete_many(self, keys):
-        if keys:
-            django_cache.delete_many(keys)
+        try:
+            if keys:
+                django_cache.delete_many(keys)
+        except Exception as e:
+            print(f"CacheManager.delete_many failed, skipping cache invalidation: {e}")
     def delete_pattern(self, pattern):
-        matched_keys = list(django_cache.keys(pattern))
-        if matched_keys:
-            django_cache.delete_many(matched_keys)
+        try:
+            matched_keys = list(django_cache.keys(pattern))
+            if matched_keys:
+                django_cache.delete_many(matched_keys)
+        except Exception as e:
+            print(f"CacheManager.delete_pattern failed, skipping cache invalidation: {e}")
 
 
 cache_manager: CacheManager = RedisCacheManager()

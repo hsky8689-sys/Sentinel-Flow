@@ -175,11 +175,10 @@ def create_project(request):
 def api_add_skill(request):
     name = request.POST.get('name')
     section_id = request.POST.get('section_id')
-    print(f"name={name}, section_id={section_id}")
-
     if not name or not section_id:
         return JsonResponse({'status': 'error', 'message': 'Date lipsă'}, status=400)
-
+    if name != request.user.username:
+        return JsonResponse({'status':'error','message':'Cannot add skills for other users'},status=403)
     success = UserTechnicalSkill.objects.add_user_skill(name=name, section_id=section_id)
     if success:
         return JsonResponse({'status': 'success','message':'Skill was succsesfully added'},status=200)
@@ -193,7 +192,9 @@ def api_add_skill(request):
 def api_delete_skill(request,skill_id):
     try:
         skill = UserTechnicalSkill.objects.get(id=skill_id)
-        success = UserTechnicalSkill.objects.remove_user_skill(skill)
+        deleted = UserTechnicalSkill.objects.remove_user_skill(skill, request.user)
+        if not deleted:
+            return JsonResponse({'status':'error','message':'You do not own this skill'},status=403)
         return JsonResponse({'status': 'success'})
     except UserTechnicalSkill.DoesNotExist:
         return JsonResponse({'status':'error','message':'Skill not found'},status=404)

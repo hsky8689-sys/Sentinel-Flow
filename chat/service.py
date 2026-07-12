@@ -29,6 +29,10 @@ class ConversationService:
         conv.participants.add(*member_ids)
         return conv.id
     @staticmethod
+    def delete_project_conversation(project_id, conversation_id):
+        deleted_count, _ = Conversation.objects.filter(id=conversation_id, project_id=project_id).delete()
+        return deleted_count > 0
+    @staticmethod
     def send_message(user_id, conversation_id, message_content, user_1on1=-1):
         if conversation_id == -1:
             conv = ConversationService.check_if_1o1_conversation_exist(user_id, user_1on1)

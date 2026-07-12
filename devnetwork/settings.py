@@ -11,6 +11,13 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 from datetime import timedelta
 AUTH_USER_MODEL = 'users.User'
+# Argon2 first for all new/re-saved passwords; PBKDF2 kept as fallback so
+# existing password hashes (created before this switch) still verify.
+# Django re-hashes to Argon2 automatically on the next successful login.
+PASSWORD_HASHERS = [
+    'django.contrib.auth.hashers.Argon2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
+]
 import os
 from pathlib import Path
 from decouple import config

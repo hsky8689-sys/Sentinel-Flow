@@ -4,7 +4,6 @@ from django.core.validators import validate_slug
 from django.db.models import Q
 from django.db import models,transaction
 from django.contrib.auth.models import AbstractBaseUser,BaseUserManager,PermissionsMixin
-from datetime import datetime
 from django.utils import timezone
 from django.db import transaction
 
@@ -12,13 +11,17 @@ from devnetwork.caching import cache_manager, UserCacheKey
 
 class CustomUserManager(BaseUserManager):
     def create_user(self,username,email,password,birthday):
-        with transaction.atomic():
-            user = self.model(username=username, email=email, birthday=birthday)
-            user.set_password(password)
-            user.save(using=self._db)
-            UserProfileSection.objects.create_default_user_sections(user.id)
-            UserTechnicalSkillSection.objects.create_user_default_techstack(user.id)
-            return user
+        try:
+            with transaction.atomic():
+                user = self.model(username=username, email=email, birthday=birthday)
+                user.set_password(password)
+                user.save(using=self._db)
+                UserProfileSection.objects.create_default_user_sections(user.id)
+                UserTechnicalSkillSection.objects.create_user_default_techstack(user.id)
+                return user
+        except Exception as e:
+            print(str(e))
+            return None
 
     def create_superuser(self, username, email, password=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
@@ -29,7 +32,7 @@ class CustomUserManager(BaseUserManager):
 
 class User(AbstractBaseUser,PermissionsMixin):
     username = models.CharField(max_length=100, blank=False, unique=True, validators=[validate_slug])
-    login_date = models.DateTimeField(default=datetime.now)
+    login_date = models.DateTimeField(default=timezone.now)
     email = models.CharField(max_length=100, blank=False, unique=True)
     birthday = models.DateField(null=True,blank=True)
     is_active = models.BooleanField(default=True)
@@ -176,19 +179,26 @@ class UserTechnicalSkillsManager(models.Manager):
             print(f"Error handling request: {str(err)}")
             return None
 
-    def remove_user_skill(self,skill):
+    def remove_user_skill(self,skill,user):
         """
-
+        Deletes `skill` only if it belongs to a section owned by `user` - the
+        section__user join is baked directly into the delete's filter so the
+        ownership check and the delete happen as one atomic query, instead of
+        a separate check-then-delete (which would be racy and, before this fix,
+        was missing entirely - any authenticated user could delete any skill
+        just by knowing its id).
         :param skill:
-        :return:
+        :param user: the requesting user; only their own skills may be deleted
+        :return: True if a row was actually deleted, False if the skill doesn't
+                 exist or isn't owned by `user`
         """
         if not skill:
             raise django.db.DatabaseError("Skill cannot be None")
         owner_user_id = UserTechnicalSkillSection.objects.filter(id=skill.section_id).values_list('user_id', flat=True).first()
-        result = self.get(id=skill.id).delete()
-        if owner_user_id is not None:
+        deleted_count, _ = self.filter(id=skill.id, section__user=user).delete()
+        if deleted_count and owner_user_id is not None:
             cache_manager.delete(UserCacheKey.TECHSTACK.format(user_id=owner_user_id))
-        return result
+        return deleted_count > 0
     def get_skills_from_section(self, section_id):
         """
 
@@ -453,7 +463,7 @@ class UserRequest(models.Model):
             on_delete=models.CASCADE,
             related_name='request_receiver'
     )
-    timestamp = models.DateTimeField(default=datetime.now,db_index=True)
+    timestamp = models.DateTimeField(default=timezone.now,db_index=True)
     request_type = models.CharField(
         max_length=20,
         choices=[('friend', 'friend'), ('project', 'project'), ('file_access', 'file_access'), ('move_file_access', 'move_file_access')]
@@ -493,7 +503,7 @@ class FriendshipManager(models.Manager):
 class Friendship(models.Model):
     sender = models.ForeignKey(User,on_delete=models.CASCADE,related_name='friend1')
     receiver = models.ForeignKey(User,on_delete=models.CASCADE,related_name='friend2')
-    startdate = models.DateTimeField(default=datetime.now)
+    startdate = models.DateTimeField(default=timezone.now)
     objects = FriendshipManager()
     class Meta:
         db_table = 'friendships'
