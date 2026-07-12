@@ -35,10 +35,11 @@ class ConversationService:
     @staticmethod
     def send_message(user_id, conversation_id, message_content, user_1on1=-1):
         if conversation_id == -1:
-            conv = ConversationService.check_if_1o1_conversation_exist(user_id, user_1on1)
-            if not conv:
-                conv = ConversationService.create_conversation(user_id,user_1on1)
-            conversation_id = conv
+            existing_conv = ConversationService.check_if_1o1_conversation_exist(user_id, user_1on1)
+            # check_if_1o1_conversation_exist returns a Conversation instance
+            # (queryset .first()), while create_conversation returns an id -
+            # normalize to an id here so conversation_id is always an int.
+            conversation_id = existing_conv.id if existing_conv else ConversationService.create_conversation(user_id, user_1on1)
 
         new_message = Message.objects.send_message(user_id, conversation_id, message_content)
         return new_message, conversation_id

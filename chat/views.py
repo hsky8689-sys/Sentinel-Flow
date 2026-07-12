@@ -4,9 +4,10 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import get_object_or_404
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
 from django.views.decorators.http import require_http_methods, require_GET
 from django_ratelimit.decorators import ratelimit
+from chat.models import Conversation
 from chat.service import ConversationService
 from projects.models import Project, UserProjectRole
 @login_required
@@ -59,6 +60,8 @@ def load_chat_by_id(request,conversation_id):
             return JsonResponse({'error':'Page number unspecified'},status=400)
         page_nr = int(page_nr)
         page_size = int(page_size)
+        if not Conversation.objects.filter(id=conversation_id, participants__id=request.user.id).exists():
+            return JsonResponse({'error': 'Conversation not found'}, status=404)
         messages = ConversationService.load_conversation_messages(
             conversation_id,
             page_nr,
@@ -129,13 +132,25 @@ def open_chat_room(request):
 @require_http_methods(['POST'])
 @ratelimit(key='user_or_ip',rate='5/s',method='POST')
 def chat_message_api(request):
-        data = json.loads(request.body)
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON'}, status=400)
         user_id = request.user.id
         conversation_id = data.get('conversation_id', -1)
         user_1on1 = data.get('user_1o1', -1)
         content = data.get('content', '')
         if content == '' or content is None:
-            return JsonResponse({'error':'Messages cannot be empty'},status=404)
+            return JsonResponse({'error':'Messages cannot be empty'},status=400)
+        if conversation_id == -1 and user_1on1 == -1:
+            return JsonResponse({'error': 'Either conversation_id or user_1o1 is required'}, status=400)
+        if conversation_id != -1 and not Conversation.objects.filter(
+            id=conversation_id, participants__id=user_id
+        ).exists():
+            # Covers both "doesn't exist" and "exists but you're not in it" -
+            # deliberately the same response for both, so a caller can't use
+            # the status code to enumerate other users' conversation ids.
+            return JsonResponse({'error': 'Conversation not found'}, status=404)
         try:
             message, real_conv_id = ConversationService.send_message(
                 user_id, conversation_id, content, user_1on1
@@ -194,6 +209,8 @@ def _get_project_conversations(request,project_id):
             'message': f'Page with index {page_nr} was retrieved',
             'content': serialized_conversations
         }, status=200)
+    except Http404:
+        return JsonResponse({'error': 'Project not found'}, status=404)
     except ValueError:
         return JsonResponse({'error': 'Parameters must be integers'}, status=400)
     except Exception as e:
@@ -221,6 +238,8 @@ def _add_project_conversation(request,project_id):
             'conversation_id': conversation_id,
             'members': list(valid_member_ids)
         }, status=200)
+    except Http404:
+        return JsonResponse({'error': 'Project not found'}, status=404)
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
     except Exception as e:
@@ -242,6 +261,8 @@ def _delete_project_conversation(request,project_id):
         if not deleted:
             return JsonResponse({'error': 'Conversation not found for this project'}, status=404)
         return JsonResponse({'success': True, 'message': 'Conversation deleted'}, status=200)
+    except Http404:
+        return JsonResponse({'error': 'Project not found'}, status=404)
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
     except Exception as e:
