@@ -27,10 +27,16 @@ class ProjectManager(models.Manager):
         if User.objects.get(project.owner_id) is not None:
             raise ValueError("The owner didnt delete his account")
 
-    def create_project(self, user, name, description):
+    def create_project(self, user, name, description, needed_skills=None, github_repos=None):
         """
         Creates a project and automatically sets the given user as owner
         :param user: The future project creator and owner
+        :param needed_skills: optional dict of {domain_name: [skill_name, ...]} - each
+               domain becomes a ProjectRequirementSection, each skill a ProjectSkillRequirement
+               under it. Caller is expected to have already validated the shape.
+        :param github_repos: optional list of {github_repo_name, github_repo_link,
+               github_repo_access_token} dicts, each becoming a linked ProjectRepoStats.
+               Caller is expected to have already validated the shape.
         :return:
         """
         try:
@@ -44,6 +50,21 @@ class ProjectManager(models.Manager):
                 if not UserProjectRole.objects.give_role(proj.owner, proj, default_roles[0][0].id):
                     transaction.set_rollback(True)
                     return None
+                for domain_name, skill_names in (needed_skills or {}).items():
+                    section = ProjectRequirementSection.objects.create(project=proj, name=domain_name)
+                    if skill_names:
+                        ProjectSkillRequirement.objects.add_skill_requirements(section, skill_names)
+                new_repo_stats = [
+                    ProjectRepoStats(
+                        github_repo_name=repo['github_repo_name'],
+                        github_repo_link=repo['github_repo_link'],
+                        github_token=repo.get('github_repo_access_token', ''),
+                    )
+                    for repo in (github_repos or [])
+                ]
+                if new_repo_stats:
+                    created_repo_stats = ProjectRepoStats.objects.bulk_create(new_repo_stats)
+                    proj.repo_stats.add(*created_repo_stats)
             cache_manager.delete(UserCacheKey.PROJECTS.format(user_id=user))
             return proj
         except django.db.DatabaseError as e:

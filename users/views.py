@@ -9,7 +9,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_http_methods, require_GET, require_POST
 from django_ratelimit.decorators import ratelimit
 
-from projects.models import Project
+from projects.models import Project, ProjectSkillRequirement
 from .models import User, UserProfileSection, UserTechnicalSkillSection, UserTechnicalSkill, UserRequest, Friendship, \
     UserProfileData
 from .search import SearchManager, SearchFilterData
@@ -118,7 +118,7 @@ def acces_profile(request,username):
         "username":user.username,
         "user_avatar":profile_picture,
         "background_picture":background_picture,
-        "email":user.email,
+        "email":user.email if request.user.username == username else None,
         "id":user.id,
         "profile_sections":[
             {"id": s.id, "name": s.name, "content": s.content, "hidden": s.hidden}
@@ -164,7 +164,7 @@ def login_page(request):
     else:
         if request.user.is_authenticated:
            return JsonResponse({'status':'bad request','message':'You are already logged in'},status=400)
-        return JsonResponse({'status': 'ready'})
+        return JsonResponse({'status': 'ready'},status=200)
 @login_required
 @csrf_protect
 @require_http_methods(["GET","POST"])
@@ -174,10 +174,38 @@ def create_project(request):
     if request.method == 'GET':
         return JsonResponse({'status': 'ready', 'user_id': request.user.id})
     elif request.method == 'POST':
-        name = request.POST['name']
-        description = request.POST['description']
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({'status': 'error', 'message': 'Invalid JSON'}, status=400)
+
+        name = data.get('name')
+        description = data.get('description')
+        if not name or not description:
+            return JsonResponse({'status': 'error', 'message': 'name and description are required'}, status=400)
+
+        needed_skills = data.get('needed_skills', {})
+        if not isinstance(needed_skills, dict) or not all(
+            isinstance(domain, str) and isinstance(skills, list) and all(isinstance(s, str) for s in skills)
+            for domain, skills in needed_skills.items()
+        ):
+            return JsonResponse({
+                'status': 'error',
+                'message': 'needed_skills must be an object of {domain: [skill, ...]}'
+            }, status=400)
+
+        github_repos = data.get('github_repos', [])
+        if not isinstance(github_repos, list) or not all(
+            isinstance(repo, dict) and repo.get('github_repo_name') and repo.get('github_repo_link')
+            for repo in github_repos
+        ):
+            return JsonResponse({
+                'status': 'error',
+                'message': 'github_repos must be a list of {github_repo_name, github_repo_link, github_repo_access_token}'
+            }, status=400)
+
         user_id = request.user.id
-        project = Project.objects.create_project(user_id,name, description)
+        project = Project.objects.create_project(user_id, name, description, needed_skills, github_repos)
         if project is None:
             return JsonResponse({
                 'status': 'error',
@@ -185,7 +213,16 @@ def create_project(request):
             }, status=400)
         return JsonResponse({
             'status': 'success',
-            'project': {'id': project.id, 'name': project.name, 'description': project.description},
+            'project': {
+                'id': project.id,
+                'name': project.name,
+                'description': project.description,
+                'needed_skills': ProjectSkillRequirement.objects.get_requirements_grouped_by_sections(project),
+                'github_repos': [
+                    {'id': r.id, 'github_repo_name': r.github_repo_name, 'github_repo_link': r.github_repo_link}
+                    for r in project.repo_stats.all()
+                ],
+            },
         }, status=201)
 @login_required
 @csrf_protect
@@ -197,11 +234,18 @@ def api_add_skill(request):
     section_id = request.POST.get('section_id')
     if not name or not section_id:
         return JsonResponse({'status': 'error', 'message': 'Date lipsă'}, status=400)
-    success = UserTechnicalSkill.objects.add_user_skill(name=name, section_id=section_id, user=request.user)
-    if success:
-        return JsonResponse({'status': 'success','message':'Skill was succsesfully added'},status=200)
-    else:
-        return JsonResponse({'status': 'error','message':'Skill was already added before, or this section does not belong to you'},status=500)
+    result = UserTechnicalSkill.objects.add_user_skill(name=name, section_id=section_id, user=request.user)
+    if result == 'invalid':
+        return JsonResponse({'status': 'error', 'message': 'section_id must be a valid id'}, status=400)
+    if result == 'not_found':
+        return JsonResponse({'status': 'error', 'message': 'Section not found'}, status=404)
+    if result == 'duplicate':
+        return JsonResponse({'status': 'error', 'message': 'Skill was already added before'}, status=409)
+    if result == 'error':
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
+    return JsonResponse({
+        'status': 'success', 'message': 'Skill was succsesfully added', 'skill_id': result.id
+    }, status=200)
 @login_required
 @csrf_protect
 @require_http_methods(["DELETE"])

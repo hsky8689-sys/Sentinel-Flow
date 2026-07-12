@@ -173,23 +173,30 @@ class UserTechnicalSkillsManager(models.Manager):
         :param name:
         :param section_id:
         :param user: the requesting user; section_id must belong to them
-        :return:
+        :return: the created UserTechnicalSkill on success, or one of the
+                 string sentinels 'invalid' (malformed section_id),
+                 'not_found', 'duplicate', 'error' on failure. A section_id
+                 that belongs to someone else intentionally maps to the same
+                 'not_found' outcome as one that doesn't exist at all, so a
+                 caller can't use this to enumerate other users' section ids.
         """
-        if not UserTechnicalSkillSection.objects.filter(id=section_id, user=user).exists():
-            return None
         try:
+            if not UserTechnicalSkillSection.objects.filter(id=section_id, user=user).exists():
+                return 'not_found'
             with transaction.atomic():
                 already_existing = self.filter(name=name,section_id=section_id).select_for_update().first()
                 if already_existing:
                     transaction.set_rollback(True)
-                    return None
-                result = self.get_or_create(name=name,section_id=section_id) if not already_existing else None
-            if result is not None:
-                cache_manager.delete(UserCacheKey.TECHSTACK.format(user_id=user.id))
-            return result
-        except (django.db.DatabaseError, ValueError) as err:
+                    return 'duplicate'
+                new_skill, _ = self.get_or_create(name=name,section_id=section_id)
+            cache_manager.delete(UserCacheKey.TECHSTACK.format(user_id=user.id))
+            return new_skill
+        except ValueError as err:
             print(f"Error handling request: {str(err)}")
-            return None
+            return 'invalid'
+        except django.db.DatabaseError as err:
+            print(f"Error handling request: {str(err)}")
+            return 'error'
 
     def remove_user_skill(self,skill,user):
         """
