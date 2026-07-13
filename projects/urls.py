@@ -24,8 +24,6 @@ urlpatterns = [
     path("settings/<int:id>/push-policy", api_project_push_policy, name="project-push-policy"),
     path('api/github/branches',api_github_get_all_repo_branches,name='get-all-repo-branches'),
     path('api/github/<int:id>/branches',api_github_handle_branch_action,name='add-branch-on-github-repo'),
-    path('api/github/<str:owner>/<str:repo>',github_proxy_view,name='github-fetch-structure'),
-    path('api/github/<str:owner>/<str:repo>/<path:path>',github_proxy_view,name='github-fetch-path'),
     path('api/code',proxy_run_code,name='run-code'),
     path('api/github/pushed-files',push_files,name='push-code'),
     path('api/file-access',request_file_open,name='request-file-access'),
@@ -41,6 +39,13 @@ urlpatterns = [
     path('api/github/<int:id>/merges',api_merge_github_branches,name='merge-branches'),
     path('api/<int:id>/github-webhook',webhook_github,name='webhook-github'),
     path('api/<int:id>',api_handle_project_repositories,name='add-repo-to-project'),
+    # These two must stay last: <str:owner>/<str:repo>[/<path:path>] is a
+    # generic 2-3 segment catch-all under api/github/ - without a trailing
+    # slash to disambiguate it (all trailing slashes were stripped project-
+    # wide), it would otherwise shadow every more specific api/github/<id>/...
+    # route above it (e.g. .../merges, .../branches) if listed earlier.
+    path('api/github/<str:owner>/<str:repo>',github_proxy_view,name='github-fetch-structure'),
+    path('api/github/<str:owner>/<str:repo>/<path:path>',github_proxy_view,name='github-fetch-path'),
 ]
 
 
