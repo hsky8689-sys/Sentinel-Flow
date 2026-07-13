@@ -1,6 +1,6 @@
 import json
 
-from django.contrib.auth import authenticate, login
+from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.http import JsonResponse
@@ -166,6 +166,11 @@ def login_page(request):
         if request.user.is_authenticated:
            return JsonResponse({'status':'bad request','message':'You are already logged in'},status=400)
         return JsonResponse({'status': 'ready'},status=200)
+@login_required
+@require_POST
+def logout_page(request):
+    logout(request)
+    return JsonResponse({'status': 'success', 'message': 'Logged out'}, status=200)
 @login_required
 @csrf_protect
 @require_http_methods(["GET","POST"])

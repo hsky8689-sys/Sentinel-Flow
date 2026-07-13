@@ -183,19 +183,6 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-TEMPLATES = [
-    {
-        'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'APP_DIRS': True,
-        'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
-            ],
-        },
-    },
-]
 ASGI_APPLICATION = "devnetwork.asgi.application"
 CHANNEL_LAYERS = {
    "default":{
@@ -226,7 +213,6 @@ DATABASES = {
 }
 
 STATIC_URL = '/static/'
-STATICFILES_DIRS = [BASE_DIR/'static']
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Password validation
@@ -262,7 +248,6 @@ USE_TZ = True
 TEMPLATES = [
     {
         'BACKEND':'django.template.backends.django.DjangoTemplates',
-        'DIRS':[BASE_DIR/'templates'],
         'APP_DIRS':True,
         'OPTIONS':{
             'context_processors': [
