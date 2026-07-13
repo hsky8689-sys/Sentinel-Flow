@@ -240,6 +240,9 @@ def _get_project_push_policy(request,id):
         project = Project.objects.filter(id=id).first()
         if project is None:
             return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
+        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+        if role == 'visitor':
+            return JsonResponse({'status': 'error', 'message': 'You are not a member of this project'}, status=403)
         return JsonResponse({
             'status': 'success',
             'can_only_modify_from_app': project.can_only_modify_from_app,

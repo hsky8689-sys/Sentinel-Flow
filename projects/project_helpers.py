@@ -32,6 +32,9 @@ def _get_project_domains(request,id):
         project = Project.objects.filter(id=id).first()
         if project is None:
             return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
+        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+        if role == 'visitor':
+            return JsonResponse({'status': 'error', 'message': 'You are not a member of this project'}, status=403)
         domains = ProjectDomain.objects.filter(project_id=project.id)
         return JsonResponse({'status':'success','domains':list(domains.values())})
     except django.db.DatabaseError:
@@ -46,11 +49,13 @@ def _add_project_domains(request,id):
             data = json.loads(request.body)
             domains = data.get('newDomains',[])
             succes = ProjectDomain.objects.add_domains_to_project(project,domains)
-            return JsonResponse({'status':'succes' if len(succes) == len(domains) else 'error',
-                         'code':200 if len(succes) == len(domains) else 404
-            })
+            ok = len(succes) == len(domains)
+            return JsonResponse(
+                {'status':'succes' if ok else 'error'},
+                status=200 if ok else 404
+            )
         else:
-            return JsonResponse({'status':'Unauthorized access','code':403})
+            return JsonResponse({'status':'Unauthorized access'}, status=403)
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
@@ -64,7 +69,7 @@ def _delete_project_domains(request,id):
                 data = json.loads(request.body)
                 domains = data.get('removedDomains', [])
                 if domains is None or len(domains) == 0:
-                    return JsonResponse({'status': 'Bad request by user','message':'No domains were added into request'},status=402)
+                    return JsonResponse({'status': 'Bad request by user','message':'No domains were added into request'},status=400)
                 success = ProjectDomain.objects.remove_domains_from_project(project, domains)
                 if success:
                     return JsonResponse({'status': 'succes','message':'Requested domains were succesfully removed'
@@ -72,6 +77,8 @@ def _delete_project_domains(request,id):
                 else:
                     return JsonResponse({'status': 'error','message':'Internal server error'
                                          },status=500)
+            else:
+                return JsonResponse({'status': 'Unauthorized access'}, status=403)
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
@@ -80,6 +87,9 @@ def _get_project_requirements(request,id):
         project = Project.objects.filter(id=id).first()
         if project is None:
             return JsonResponse({'status': 'error', 'message': 'Project not found'}, status=404)
+        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+        if role == 'visitor':
+            return JsonResponse({'status': 'error', 'message': 'You are not a member of this project'}, status=403)
         succes = ProjectSkillRequirement.objects.get_requirements_grouped_by_sections(project)
         return JsonResponse({'status':'succes','requirements':succes})
     except Exception as e:
@@ -97,7 +107,7 @@ def _add_project_requirements(request,id):
                 requirements = data.get('newRequirements',[])
                 if requirements is None or len(requirements) == 0:
                     return JsonResponse({'status': 'Bad request by user', 'message': 'No requirements were added into request'},
-                                        status=402)
+                                        status=400)
                 manager = ProjectSkillRequirement.objects
                 section_manager = ProjectRequirementSection.objects
                 batches = {}
@@ -128,7 +138,7 @@ def _remove_project_requirements(request,id):
                 data = json.loads(request.body)
                 requirements = data.get('removedRequirements',[])
                 if requirements is None or len(requirements) == 0:
-                    return JsonResponse({'status': 'bad request', 'message':'No requirements added'},status=402)
+                    return JsonResponse({'status': 'bad request', 'message':'No requirements added'},status=400)
                 manager = ProjectSkillRequirement.objects
                 section_manager = ProjectRequirementSection.objects
                 batches = {}
@@ -178,7 +188,7 @@ def _add_project_sections(request,id):
             data = json.loads(request.body)
             requirements = data.get('newSections',[])
             if requirements is None or len(requirements) == 0:
-                return JsonResponse({'status': 'bad request','message': 'No sections added to the request'}, status=402)
+                return JsonResponse({'status': 'bad request','message': 'No sections added to the request'}, status=400)
             res = ProjectRequirementSection.objects.add_requirement_sections(project,requirements)
             if res is None or len(res) == 0:
                 return JsonResponse({'status': 'error', 'message': 'Sections could not be added'},status=500)
@@ -212,9 +222,12 @@ def _get_project_tasks(request,id):
 def _add_project_task(request,id):
     try:
         data = json.loads(request.body)
-        project = Project.objects.get(id=id)
+        project = Project.objects.filter(id=id).first()
         if project is None:
             return JsonResponse({'status':'Error','message':'Project does not exist'},status=404)
+        role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
+        if not UserProjectRole.objects.get_role_permissions(role, project)['can_add_tasks']:
+            return JsonResponse({'status': 'Unauthorized access'}, status=403)
         title = data.get('title')
         description = data.get('description')
         start_date = data.get('start_date')
@@ -252,7 +265,7 @@ def _add_project_task(request,id):
         return JsonResponse({'status':'error','message':'Internal server error'},status=500)
 def _remove_project_tasks(request,id):
     try:
-        project = Project.objects.get(id=id)
+        project = Project.objects.filter(id=id).first()
         if project is None:
             return JsonResponse({'status':'Error','message':'Project does not exist'},status=404)
         role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
@@ -262,7 +275,7 @@ def _remove_project_tasks(request,id):
             if requirements is None or len(requirements) == 0:
                 return JsonResponse({'status': 'bad request',
                                           'message': 'No tasks queued for removal'},
-                                          status=402)
+                                          status=400)
             deleted = ProjectTask.objects.remove_tasks_from_project(requirements)
             return JsonResponse({'status':'succes' if deleted else 'error',
                                  'message':'Tasks were successfully removed' if deleted else 'Tasks were not removed'},

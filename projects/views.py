@@ -745,6 +745,12 @@ def api_handle_project_join_request(request):
         ).first()
         if user_req is None:
             return JsonResponse({'status': 'error', 'message': 'Request not found'}, status=404)
+        if user_req.receiver_id != request.user.id:
+            # Was missing entirely - any authenticated user who could guess/
+            # know a (sender_id, receiver_id) pair could accept or decline a
+            # join request addressed to someone else. api_handle_project_invite
+            # already has the equivalent check for invites; this mirrors it.
+            return JsonResponse({'status': 'error', 'message': 'Only the receiver can handle this request'}, status=403)
 
         if not user_req.target:
             return JsonResponse({'status': 'error', 'message': 'No project associated with this request'}, status=400)
@@ -762,7 +768,12 @@ def api_handle_project_join_request(request):
             UserProjectRole.objects.create(
                 user=user_req.sender,
                 project=project,
-                role=ProjectRole.objects.get(name='newbie')
+                # 'viewer' is DEFAULT_PROJECT_ROLES's only all-permissions-False
+                # role, i.e. the least-privileged one - used as the default
+                # role for a freshly-joined member. There is no 'newbie' role
+                # (this used to reference one that was never defined, which
+                # made accepting a join request always 500).
+                role=ProjectRole.objects.get(name='viewer')
             )
             cache_manager.delete(UserCacheKey.PROJECTS.format(user_id=user_req.sender_id))
             cache_manager.delete(ProjectCacheKey.USER_ROLE.format(project_id=project.id, user_id=user_req.sender_id))
@@ -770,20 +781,7 @@ def api_handle_project_join_request(request):
             user_req.save()
             return JsonResponse({'status': 'success', 'message': 'User added to project!'},status=200)
 
-        elif action in ['reject', 'decline']:
-            with transaction.atomic():
-                UserProjectRole.objects.create(
-                    user=user_req.sender,
-                    project=project,
-                    role=ProjectRole.objects.get(name='newbie') # Rolul tău default
-                )
-                user_req.status = 'accepted'
-                user_req.save()
-            cache_manager.delete(UserCacheKey.PROJECTS.format(user_id=user_req.sender_id))
-            cache_manager.delete(ProjectCacheKey.USER_ROLE.format(project_id=project.id, user_id=user_req.sender_id))
-            return JsonResponse({'status': 'success', 'message': 'User successfully added to the project!'}, status=200)
-
-        elif action in ['reject', 'deny', 'declined']:
+        elif action in ['reject', 'decline', 'deny', 'declined']:
             user_req.status = 'declined'
             user_req.save()
             return JsonResponse({'status': 'success', 'message': 'Request declined.'},status=200)
@@ -794,7 +792,7 @@ def api_handle_project_join_request(request):
     except json.JSONDecodeError:
         return JsonResponse({'status': 'error', 'message': 'Invalid JSON'}, status=400)
     except ProjectRole.DoesNotExist:
-        return JsonResponse({'status': 'error', 'message': 'Role "newbie" not found'}, status=500)
+        return JsonResponse({'status': 'error', 'message': 'Role "viewer" not found'}, status=500)
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
 @login_required
@@ -874,18 +872,23 @@ def api_handle_project_invite(request, invite_id):
         match request.method:
             case "PATCH":
                 data = json.loads(request.body or '{}')
-                role = UserProjectRole.objects.get_user_role_in_project(project, request.user)
-                permissions = UserProjectRole.objects.get_role_permissions(role, project)
-                if not permissions['can_invite_others']:
-                    return JsonResponse({'status': 'error', 'message': 'You do not have permission to either invite others or handle incoming requests'},
-                                        status=403)
+                # NOTE: no can_invite_others check here (there used to be
+                # one, checking request.user's OWN project permissions) -
+                # the receiver of an invite is by definition not a project
+                # member yet (api_invite_to_project only allows inviting
+                # visitors), so that permission is always False for them and
+                # accepting your own invite always 403'd. The
+                # invite.receiver_id == request.user.id check above is the
+                # only authorization this needs: you can only accept an
+                # invite addressed to you.
                 if data.get('status') != 'accepted':
                     return JsonResponse({'status': 'error', 'message': 'Unsupported status transition'}, status=400)
                 with transaction.atomic():
                     UserProjectRole.objects.create(
                         user=invite.receiver,
                         project=project,
-                        role=ProjectRole.objects.get(name='newbie')
+                        # see the matching comment in api_handle_project_join_request
+                        role=ProjectRole.objects.get(name='viewer')
                     )
                     invite.status = 'accepted'
                     invite.save(update_fields=['status'])
@@ -899,7 +902,7 @@ def api_handle_project_invite(request, invite_id):
     except json.JSONDecodeError:
         return JsonResponse({'status': 'error', 'message': 'Invalid JSON'}, status=400)
     except ProjectRole.DoesNotExist:
-        return JsonResponse({'status': 'error', 'message': 'Role "newbie" not found'}, status=500)
+        return JsonResponse({'status': 'error', 'message': 'Role "viewer" not found'}, status=500)
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
@@ -1090,14 +1093,14 @@ def api_request_file_share(request):
             return JsonResponse({
                                       'status': 'error',
                                       'message': 'User is not authenticated'
-                                      },status='400')
+                                      },status=400)
         project_name=data.get('project','')
         file_url=data.get('file_url','')
         if file_url == '':
             return JsonResponse({
                 'status': 'Bad request',
                 'message': 'User did not add a file to the request'
-            }, status='402')
+            }, status=400)
         project = Project.objects.filter(name=project_name).first()
         if project is None:
             return JsonResponse({'status': 'Bad request', 'message': 'Project not found'}, status=404)
@@ -1108,18 +1111,18 @@ def api_request_file_share(request):
             return JsonResponse({
                 'status': 'Bad request',
                 'message': 'User requested permission to a file from another project'
-            }, status='402')
+            }, status=400)
 
         user_role = UserProjectRole.objects.get_user_role_in_project(project, sender)
         if user_role != 'owner':
             permissions = UserProjectRole.objects.get_role_permissions(user_role, project)
             if not permissions['can_modify_files']:
-                return JsonResponse({'status': 'unauthorized access'}, status='403')
+                return JsonResponse({'status': 'unauthorized access'}, status=403)
 
             task_access = TaskResourceAccess.objects
             if not task_access.user_has_access_to_path(sender, project,file_url):
                 return JsonResponse({'status': 'unauthorized access',
-                                          'message':'User does not have access to file'}, status='403')
+                                          'message':'User does not have access to file'}, status=403)
 
         resource_access = ResourceAccess.objects
         current_writer = resource_access.is_file_locked(file_url,project)
@@ -1145,7 +1148,7 @@ def api_handle_request_file_share(request):
         return JsonResponse({
             'status': 'error',
             'message': 'User is not authenticated'
-        }, status='400')
+        }, status=400)
     try:
         data = json.loads(request.body)
         response = data.get('response')
@@ -1160,26 +1163,26 @@ def api_handle_request_file_share(request):
             return JsonResponse({
                 'status': 'Not found',
                 'message': 'File share requests with sender_id:{} and receiver_id:{} was not found'.format(sender_id,receiver_id)
-            }, status='404')
+            }, status=404)
 
         receiver_id = checked.receiver_id
         if receiver_id != request.user.id:
             return JsonResponse({
                 'status': 'Bad request',
                 'message': 'File share requests may only be handled by the receiver'
-            }, status='403')#pe viitor o sa modific ca owneru sa aiba drept suprem...
+            }, status=403)#pe viitor o sa modific ca owneru sa aiba drept suprem...
 
         if checked.request_type != 'move_file_access':
             return JsonResponse({
                 'status': 'Bad request',
                 'message': 'File share requests with sender_id:{} and receiver_id:{} has wrong type for this request:{}'.format(sender_id,receiver_id,checked.request_type)
-            }, status='402')
+            }, status=400)
         if checked.status != 'pending':
             return JsonResponse({
                 'status': 'Bad request',
                 'message': 'File share requests with sender_id:{} and receiver_id:{} has already been {}'.format(
                     sender_id,receiver_id,checked.status)
-            }, status='402')
+            }, status=400)
 
         if response == 'ACCEPT':
             res = UserRequest.objects.handle_move_file_access_request(sender_id,receiver_id,response)
@@ -1200,7 +1203,7 @@ def api_handle_request_file_share(request):
         else:
             return JsonResponse({'status':'bad request',
                                  'message':'{} is not a valid user request response'
-                                 ',choose "ACCEPT/DENY" the next time'.format(response)},status=402)
+                                 ',choose "ACCEPT/DENY" the next time'.format(response)},status=400)
     except Exception as e:
         print(str(e))
         return JsonResponse({'status': 'error', 'message': 'Internal server error'},status=500)
