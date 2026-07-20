@@ -85,15 +85,14 @@ def acces_profile(request,username):
         "teckstack_category":{},
         "profile_projects":[],
     }
-    if request.user.username == username:
-        profile_stats["profile_sections"] = (UserProfileSection.
+    profile_stats["profile_sections"] = (UserProfileSection.
                                         objects.
-                                        get_user_profile_sections(user,includehidden=True))
-    else:
-        profile_stats["profile_sections"] = (UserProfileSection.
-                                             objects.
-                                             get_user_profile_sections(user, includehidden=False))
-    profile_stats["techstack_category"] = UserTechnicalSkillSection.objects.get_user_techstack(user)
+                                        get_user_profile_sections(user,
+                                                                  includehidden=
+                                                                  request.user.username == username))
+    profile_stats["techstack_category"] = (UserTechnicalSkillSection.
+                                           objects.
+                                           get_user_techstack(user))
     profile_stats["profile_projects"] = Project.objects.get_user_projects(user)
     sent_to_him = False
     received_from_him = False
@@ -126,10 +125,13 @@ def acces_profile(request,username):
             {"id": s.id, "name": s.name, "content": s.content, "hidden": s.hidden}
             for s in profile_stats["profile_sections"]
         ],
-        "techstack_category":{
-            section.name: [skill.name for skill in skills]
-            for section, skills in profile_stats["techstack_category"].items()
-        },
+        "techstack_category": [
+        {
+            "id": section.id,
+            "name": section.name,
+            "skills": [{"id": skill.id, "name": skill.name} for skill in skills]
+        }
+        for section, skills in profile_stats["techstack_category"].items()],
         "user_projects":[
             {"id": p.id, "name": p.name, "description": p.description}
             for p in profile_stats["profile_projects"]
@@ -240,8 +242,9 @@ def create_project(request):
 @transaction.atomic
 @ratelimit(key='user',rate='30/m',block=True)
 def api_add_skill(request):
-    name = request.POST.get('name')
-    section_id = request.POST.get('section_id')
+    body = json.loads(request.body)
+    name = body.get('name')
+    section_id = body.get('section_id')
     if not name or not section_id:
         return JsonResponse({'status': 'error', 'message': 'Date lipsă'}, status=400)
     result = UserTechnicalSkill.objects.add_user_skill(name=name, section_id=section_id, user=request.user)
@@ -256,6 +259,39 @@ def api_add_skill(request):
     return JsonResponse({
         'status': 'success', 'message': 'Skill was succsesfully added', 'skill_id': result.id
     }, status=200)
+@login_required
+@csrf_protect
+@require_POST
+@ratelimit(key='user',rate='30/m',block=True)
+def api_add_techstack_section(request):
+    try:
+        body = json.loads(request.body)
+        section_name = body.get('section_name')
+        skills_names = body.get('skills_names')
+        if not section_name:
+            return JsonResponse({'status':'bad request','message':'section name is mandatory'},status=400)
+        if (skills_names is not None) and (not isinstance(skills_names,list)):
+            return JsonResponse({'status':'bad request','message':'you can either provide a LIST of skill names or no skill names at all'},status=400)
+        new_section = UserTechnicalSkillSection.objects.create(name=section_name,
+                                                               user=request.user)
+        if new_section is None:
+            return JsonResponse({'status': 'error', 'message': 'Could not create techstack section'}, status=500)
+        skills_length = len(skills_names) if skills_names is not None else 0
+        if skills_length>0:
+            created = UserTechnicalSkill.objects.bulk_create([UserTechnicalSkill(name=name,section=new_section)
+                                                for name in skills_names])
+            skills_saved = len(created) == skills_length
+            if not skills_saved:new_section.delete()
+            return JsonResponse({'status':'success' if skills_saved else 'error',
+                                      'message':'both new section and set of skills were saved' if skills_saved
+                                       else 'could not save new section and skills',
+                                      'skills_data':[{"id":s.id,"name":s.name} for s in created]
+                                                      if skills_saved else [],
+                                      'section_id':new_section.id},
+                                status=200 if skills_saved else 500)
+        return JsonResponse({'status':'success','message':'section succesfully created','section_id':new_section.id},status=200)
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': 'Internal server error'}, status=500)
 @login_required
 @csrf_protect
 @require_http_methods(["DELETE"])

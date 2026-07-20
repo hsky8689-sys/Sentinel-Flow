@@ -3,7 +3,7 @@ from django.urls import path
 from projects.views import api_request_file_access
 from users.views import signup_page, acces_profile, api_add_skill, api_delete_skill, search_page, \
     search_api, create_project, api_friend_requests, connections_page, api_friend_request_detail, \
-    api_remove_friend, logout_page, provide_csrf_token
+    api_remove_friend, logout_page, provide_csrf_token, api_add_techstack_section
 
 app_name = 'users'
 
@@ -12,6 +12,7 @@ urlpatterns = [
     path("logout",logout_page,name="logout"),
     path('skills',api_add_skill,name='api_add_skill'),
     path('skills/<int:skill_id>',api_delete_skill,name='api_delete_skill'),
+    path('techstacks/',api_add_techstack_section),
     path('search', search_page, name='search_page'),
     path('search/api', search_api, name='search_api'),
     path('create-new-project',create_project,name='create_project'),

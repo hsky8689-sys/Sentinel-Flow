@@ -38,3 +38,5 @@ tzdata==2026.2
 ujson==5.13.0
 urllib3==2.7.0
 zope_interface==8.5
+
+djangorestframework-simplejwt
